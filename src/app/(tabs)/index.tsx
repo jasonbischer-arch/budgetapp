@@ -20,7 +20,15 @@ import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
 import { money, moneyWhole, shortDate } from '@/lib/format';
 import { balances, toBillSchedule, useHouseholdData } from '@/lib/household-data';
-import { periodMonths, spendingByCategory, totalsFor, trailingAverages } from '@/lib/insights';
+import { monthlyAmount } from '@/lib/schedule';
+import {
+  expenseSplit,
+  periodMonths,
+  spendingByCategory,
+  totalsFor,
+  trailingAverages,
+  trailingMonths,
+} from '@/lib/insights';
 import { dueDates, endOfMonth, paydays, today } from '@/lib/schedule';
 
 type Period = '1' | '3' | '6' | '12';
@@ -43,8 +51,13 @@ export default function Overview() {
   const [period, setPeriod] = useState<Period>('1');
 
   const now = useMemo(() => new Date(), []);
-  const { cash, cards } = balances(data.accounts);
+  const { cash, cards, cardAccounts } = balances(data.accounts);
   const avg = trailingAverages(data.flows, now, data.firstDate);
+  const billsPerMonth = data.bills.reduce(
+    (s, b) => s + monthlyAmount(b.frequency, toBillSchedule(b, data.liabilities).amount),
+    0,
+  );
+  const split = expenseSplit(data.flows, data.categories, trailingMonths(now, data.firstDate), billsPerMonth);
 
   // Rest of this month: paychecks still coming, bills still due.
   const rest = useMemo(() => {
@@ -113,6 +126,21 @@ export default function Overview() {
               </T>
             </View>
           </Row>
+          {cardAccounts.length > 0 && (
+            <View style={[styles.cardList, { borderColor: c.heroMuted }]}>
+              {cardAccounts.map((a) => (
+                <Row key={a.id} style={{ justifyContent: 'space-between' }}>
+                  <T color={c.heroMuted} style={styles.heroSmall} numberOfLines={1}>
+                    {a.name}
+                    {a.last_four ? ` ••${a.last_four}` : ''}
+                  </T>
+                  <T color={c.heroText} style={[styles.heroSmall, { fontWeight: '700', fontVariant: ['tabular-nums'] }]}>
+                    {money(a.balance_ledger ?? 0)}
+                  </T>
+                </Row>
+              ))}
+            </View>
+          )}
         </View>
       )}
 
@@ -123,6 +151,16 @@ export default function Overview() {
         <Stat label="Expenses" value={moneyWhole(avg.spent)} />
         <Stat label="Saved" value={moneyWhole(avg.saved)} />
       </Row>
+      {avg.months > 0 && (
+        <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
+          <Stat
+            label="Fixed expenses"
+            value={moneyWhole(split.fixed)}
+            sub={split.fromBills ? 'from your bills' : 'rent, utilities, loans…'}
+          />
+          <Stat label="Variable expenses" value={moneyWhole(split.variable)} sub="groceries, dining…" />
+        </Row>
+      )}
       <T variant="small" style={{ marginTop: -Spacing.sm }}>
         {avg.months
           ? avg.months >= 12
@@ -253,4 +291,5 @@ const styles = StyleSheet.create({
   heroDivider: { height: StyleSheet.hairlineWidth, opacity: 0.4, marginVertical: Spacing.md },
   heroSmall: { fontSize: 13 },
   heroSub: { fontSize: 18, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  cardList: { marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: StyleSheet.hairlineWidth, gap: 6 },
 });

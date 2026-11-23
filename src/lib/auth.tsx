@@ -7,6 +7,8 @@ export interface Household {
   id: string;
   name: string;
   invite_code: string;
+  /** Savings set aside from every paycheck; null = calculated automatically. */
+  savings_per_check: number | null;
 }
 
 interface AuthState {
@@ -32,9 +34,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // RLS returns only the household this user belongs to.
     const { data } = await supabase
       .from('households')
-      .select('id, name, invite_code')
+      .select('id, name, invite_code, savings_per_check')
       .maybeSingle();
-    setHousehold((data as Household | null) ?? null);
+    const h = data as Household | null;
+    setHousehold(
+      h ? { ...h, savings_per_check: h.savings_per_check == null ? null : Number(h.savings_per_check) } : null,
+    );
   }, []);
 
   useEffect(() => {

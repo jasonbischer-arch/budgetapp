@@ -12,6 +12,7 @@ import {
   FlowRow,
   IncomeSource,
   Liability,
+  refreshAutoBudgets,
   useQuery,
 } from './data';
 import { monthStart } from './insights';
@@ -40,6 +41,9 @@ const EMPTY: HouseholdData = {
 /** Everything the Overview and Plan tabs need, reloaded on focus. */
 export function useHouseholdData() {
   return useQuery<HouseholdData>(async () => {
+    // Keep automatic budgets at the latest 12-month average (cheap; only
+    // changes categories that follow the average).
+    await refreshAutoBudgets().catch(() => {});
     const [accounts, categories, flows, firstDate, incomes, bills, liabilities] = await Promise.all([
       fetchAccounts(),
       fetchCategories(),
@@ -59,10 +63,9 @@ export function balances(accounts: Account[]) {
   const cash = visible
     .filter((a) => a.type === 'depository')
     .reduce((s, a) => s + (a.balance_available ?? a.balance_ledger ?? 0), 0);
-  const cards = visible
-    .filter((a) => a.type === 'credit')
-    .reduce((s, a) => s + (a.balance_ledger ?? 0), 0);
-  return { cash, cards };
+  const cardAccounts = visible.filter((a) => a.type === 'credit');
+  const cards = cardAccounts.reduce((s, a) => s + (a.balance_ledger ?? 0), 0);
+  return { cash, cards, cardAccounts };
 }
 
 export const toPaySchedule = (s: IncomeSource): PaySchedule => s;

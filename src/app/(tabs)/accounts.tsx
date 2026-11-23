@@ -6,7 +6,7 @@ import { PlaidLinkSuccess } from '@/components/plaid-link.shared';
 import { Button, Card, Divider, ErrorText, Row, Screen, T } from '@/components/ui';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
-import { fetchAccounts, fetchBankItems, setAccountHidden, useQuery } from '@/lib/data';
+import { fetchAccounts, fetchBankItems, rotateInviteCode, setAccountHidden, useQuery } from '@/lib/data';
 import { money, timeAgo } from '@/lib/format';
 import { callFunction } from '@/lib/supabase';
 
@@ -18,7 +18,7 @@ interface LinkSession {
 
 export default function Accounts() {
   const c = useTheme();
-  const { household, signOut } = useAuth();
+  const { household, signOut, refreshHousehold } = useAuth();
   const [link, setLink] = useState<LinkSession | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -177,7 +177,8 @@ export default function Accounts() {
       <Card>
         <T variant="heading">Household</T>
         <T variant="muted">
-          Share this invite code so your partner can join {household?.name ?? 'your household'}:
+          Share this invite code so your partner can join {household?.name ?? 'your household'}. A
+          household holds two people; once you&apos;ve both joined, nobody else can.
         </T>
         <Row style={{ justifyContent: 'space-between' }}>
           <T variant="title" style={{ letterSpacing: 3 }} selectable>
@@ -195,6 +196,17 @@ export default function Accounts() {
         </Row>
       </Card>
 
+      <Button
+        title="Make a new invite code"
+        kind="secondary"
+        loading={busy === 'rotate'}
+        onPress={() =>
+          run('rotate', async () => {
+            await rotateInviteCode();
+            await refreshHousehold();
+          })
+        }
+      />
       <Button title="Sign out" kind="secondary" onPress={signOut} />
 
       {link && <PlaidLink linkToken={link.linkToken} onSuccess={onLinked} onExit={onLinkExit} />}

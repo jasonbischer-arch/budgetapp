@@ -18,6 +18,10 @@ export const Colors = {
     heroMuted: '#A7D3CE',
     // One hue for magnitude bars (spending by category, leftovers).
     bar: '#14857A',
+    // Two identity colors that pass color-blind checks side by side
+    // (paycheck split: save / spend).
+    accent: '#2A78D6',
+    saveColor: '#1BAF7A',
     track: '#E3E8E7',
     positive: '#15803D',
     negative: '#B91C1C',
@@ -40,6 +44,8 @@ export const Colors = {
     heroText: '#F0FDFA',
     heroMuted: '#8CC7BF',
     bar: '#2BB5A4',
+    accent: '#3987E5',
+    saveColor: '#199E70',
     track: '#22302E',
     positive: '#4ADE80',
     negative: '#F87171',

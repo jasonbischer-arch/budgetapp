@@ -31,6 +31,10 @@ export interface Category {
   name: string;
   color: string;
   kind: CategoryKind;
+  /** Fixed (rent, utilities, insurance...) or variable (groceries, dining...). */
+  expense_type: 'fixed' | 'variable';
+  /** true: the budget follows the 12-month average automatically. */
+  budget_auto: boolean;
   is_income: boolean;
   monthly_budget: number | null;
   sort_order: number;
@@ -207,8 +211,28 @@ export async function updateTransaction(
   unwrap(await supabase.from('transactions').update(patch).eq('id', id));
 }
 
+/** Sets a budget by hand: it stops following the automatic average. */
 export async function updateCategoryBudget(id: string, monthly_budget: number | null) {
-  unwrap(await supabase.from('categories').update({ monthly_budget }).eq('id', id));
+  unwrap(await supabase.from('categories').update({ monthly_budget, budget_auto: false }).eq('id', id));
+}
+
+/** Hands a category's budget back to the automatic 12-month average. */
+export async function resetCategoryBudget(id: string) {
+  unwrap(await supabase.from('categories').update({ monthly_budget: null, budget_auto: true }).eq('id', id));
+  await refreshAutoBudgets();
+}
+
+/** Sets variable-category budgets to their 12-month average (server-side). */
+export async function refreshAutoBudgets() {
+  unwrap(await supabase.rpc('refresh_auto_budgets'));
+}
+
+export async function saveSavingsPerCheck(householdId: string, value: number | null) {
+  unwrap(await supabase.from('households').update({ savings_per_check: value }).eq('id', householdId));
+}
+
+export async function rotateInviteCode(): Promise<string> {
+  return unwrap(await supabase.rpc('rotate_invite_code')) as string;
 }
 
 export async function setAccountHidden(id: string, hidden: boolean) {

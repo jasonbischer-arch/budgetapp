@@ -31,9 +31,28 @@ const cats = spendingByCategory(rows, periodMonths(now, 1));
 assert(cats[0].categoryId === "rent" && cats[1].amount === 280, "category totals ranked, refunds subtracted");
 
 const sugg = cutSuggestions(rows, [
-  { id: "dine", name: "Dining", kind: "expense", provider_categories: ["FOOD_AND_DRINK"], monthly_budget: null },
-  { id: "rent", name: "Rent", kind: "expense", provider_categories: ["RENT_AND_UTILITIES_RENT"], monthly_budget: null },
-], now);
+  { id: "dine", name: "Dining", kind: "expense", expense_type: "variable", provider_categories: ["FOOD_AND_DRINK"], monthly_budget: null },
+  { id: "rent", name: "Rent", kind: "expense", expense_type: "fixed", provider_categories: ["RENT_AND_UTILITIES_RENT"], monthly_budget: null },
+], now, "2026-05-15");
 console.log("  ", JSON.stringify(sugg));
 assert(sugg.length === 1 && sugg[0].categoryId === "dine", "suggests dining, never rent");
 assert(sugg[0].target < sugg[0].average && sugg[0].target >= sugg[0].average * 0.7 - 10, "cut is at most ~30%");
+
+assert(!!sugg[0].tip, "each cut comes with a tip");
+
+// Fixed vs variable
+import { expenseSplit, paycheckSplit, trailingMonths } from "../src/lib/insights.ts";
+const cats2 = [
+  { id: "dine", name: "Dining", kind: "expense" as const, expense_type: "variable" as const, provider_categories: ["FOOD_AND_DRINK"], monthly_budget: null },
+  { id: "rent", name: "Rent", kind: "expense" as const, expense_type: "fixed" as const, provider_categories: ["RENT_AND_UTILITIES_RENT"], monthly_budget: null },
+];
+const tm = trailingMonths(now, "2026-05-15");
+const split = expenseSplit(rows, cats2, tm, 0);
+assert(Math.abs(split.fixed - 1800) < 0.01 && Math.abs(split.variable - (2360 / 5 - 20)) < 0.01, "fixed vs variable from spending: " + JSON.stringify(split));
+assert(expenseSplit(rows, cats2, tm, 2400).fixed === 2400, "fixed uses entered bills when present");
+
+// Even savings: $900 typical after bills, $1,300/mo variable over ~2.17 checks/mo
+const ps = paycheckSplit({ typicalAfterBills: 900, variablePerMonth: 1300, checksPerMonth: 4.33, savingsOverride: null });
+assert(ps.savings === 590 && Math.abs(ps.leftToSpend - 310) < 0.01, "auto savings = after bills - spending per check (rounded to $10): " + JSON.stringify(ps));
+assert(paycheckSplit({ typicalAfterBills: 900, variablePerMonth: 1300, checksPerMonth: 4.33, savingsOverride: 200 }).leftToSpend === 700, "your own savings amount wins");
+assert(paycheckSplit({ typicalAfterBills: 200, variablePerMonth: 1300, checksPerMonth: 2, savingsOverride: null }).savings === 0, "never suggests negative savings");

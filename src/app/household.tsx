@@ -14,11 +14,12 @@ export default function HouseholdSetup() {
   async function run(kind: 'create' | 'join') {
     setBusy(kind);
     setError(null);
-    const { error } =
+    const { data, error } =
       kind === 'create'
         ? await supabase.rpc('create_household', { household_name: name })
         : await supabase.rpc('join_household', { code });
     if (error) setError(error.message);
+    else if (!data) setError('That invite code didn\u2019t match. Check it and try again.');
     else await refreshHousehold();
     setBusy(null);
   }

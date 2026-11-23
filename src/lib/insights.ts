@@ -13,6 +13,7 @@ export interface CategoryLike {
   id: string;
   name: string;
   kind: 'income' | 'expense' | 'transfer' | 'savings';
+  expense_type?: 'fixed' | 'variable';
   provider_categories: string[];
   monthly_budget: number | null;
 }
@@ -56,7 +57,8 @@ export function periodMonths(now: Date, count: number): Set<string> {
  * partial, and so is the month the history starts in unless it starts in its
  * first few days.
  */
-export function trailingAverages(rows: FlowRowLike[], now: Date, firstDate: string | null) {
+/** The complete months (up to 12) that the bank history fully covers. */
+export function trailingMonths(now: Date, firstDate: string | null): Set<string> {
   let firstFull = monthStart(now, -12);
   if (firstDate) {
     const startsEarly = Number(firstDate.slice(8)) <= 3;
@@ -69,6 +71,11 @@ export function trailingAverages(rows: FlowRowLike[], now: Date, firstDate: stri
     const m = monthStart(now, -i);
     if (m >= firstFull && m < current) months.add(m);
   }
+  return months;
+}
+
+export function trailingAverages(rows: FlowRowLike[], now: Date, firstDate: string | null) {
+  const months = trailingMonths(now, firstDate);
   const t = totalsFor(rows, months);
   const n = months.size;
   return {
@@ -98,65 +105,105 @@ export function spendingByCategory(rows: FlowRowLike[], months: Set<string>) {
 }
 
 // ---------------------------------------------------------------------------
+// Fixed vs variable expenses
+// ---------------------------------------------------------------------------
+
+/** Average monthly spending per category over the trailing complete months. */
+export function categoryAverages(rows: FlowRowLike[], months: Set<string>) {
+  const n = months.size || 1;
+  return new Map(spendingByCategory(rows, months).map((x) => [x.categoryId, x.amount / n]));
+}
+
+/**
+ * Fixed vs variable monthly expenses. Fixed uses your bills when you've
+ * entered them (they're exact); otherwise the average of fixed categories.
+ */
+export function expenseSplit(
+  rows: FlowRowLike[],
+  categories: CategoryLike[],
+  months: Set<string>,
+  billsPerMonth: number,
+) {
+  const avg = categoryAverages(rows, months);
+  let fixedFromSpending = 0;
+  let variable = 0;
+  for (const [id, amount] of avg) {
+    const cat = categories.find((c) => c.id === id);
+    if (cat?.expense_type === 'fixed') fixedFromSpending += amount;
+    else variable += amount; // includes uncategorized
+  }
+  const fixed = billsPerMonth > 0 ? billsPerMonth : fixedFromSpending;
+  return { fixed, variable, fromBills: billsPerMonth > 0 };
+}
+
+// ---------------------------------------------------------------------------
 // Where to cut
 // ---------------------------------------------------------------------------
 
-/**
- * How much of a category's spending is realistically flexible. Essentials
- * (rent, utilities, insurance, loans, taxes, health) aren't suggested.
- */
-function flexibility(cat: CategoryLike): number {
-  const p = cat.provider_categories;
-  if (p.includes('FOOD_AND_DRINK_GROCERIES')) return 0.1;
-  if (p.includes('TRANSPORTATION')) return 0.15;
-  if (
-    ['FOOD_AND_DRINK', 'GENERAL_MERCHANDISE', 'ENTERTAINMENT', 'TRAVEL', 'PERSONAL_CARE'].some((x) =>
-      p.includes(x),
-    )
-  ) {
-    return 0.3;
-  }
-  if (p.includes('GENERAL_SERVICES') || p.includes('OTHER')) return 0.2;
-  return 0;
+interface CutRule {
+  match: string;
+  /** Most of the category that's realistically flexible. */
+  flex: number;
+  tip: string;
+}
+
+/** Most specific first. Essentials (health, giving, fixed bills) aren't cut. */
+const CUT_RULES: CutRule[] = [
+  { match: 'FOOD_AND_DRINK_GROCERIES', flex: 0.1, tip: 'Plan the week\u2019s meals, shop with a list, and switch to store brands.' },
+  { match: 'FOOD_AND_DRINK', flex: 0.3, tip: 'Swap two takeout or restaurant meals a week for cooking at home.' },
+  { match: 'GENERAL_MERCHANDISE', flex: 0.3, tip: 'Wait 48 hours before non-essential buys and unsubscribe from store emails.' },
+  { match: 'ENTERTAINMENT', flex: 0.3, tip: 'Rotate streaming services: keep one or two at a time.' },
+  { match: 'TRAVEL', flex: 0.3, tip: 'Book earlier, travel off-peak, and put card points toward trips.' },
+  { match: 'PERSONAL_CARE', flex: 0.2, tip: 'Stretch time between appointments and compare gym memberships.' },
+  { match: 'TRANSPORTATION', flex: 0.15, tip: 'Combine errands, compare gas prices, and re-quote car insurance yearly.' },
+  { match: 'BANK_FEES', flex: 1, tip: 'Turn on low-balance alerts and ask your bank to waive fees.' },
+  { match: 'OTHER', flex: 0.2, tip: 'Review these purchases: recategorize the ones that belong elsewhere.' },
+];
+
+function cutRule(cat: CategoryLike): CutRule | undefined {
+  return CUT_RULES.find((r) => cat.provider_categories.includes(r.match));
 }
 
 export interface CutSuggestion {
   categoryId: string;
   name: string;
-  average: number; // per month, last 6 complete months
+  average: number; // per month, trailing complete months
   target: number; // suggested monthly budget
   savings: number; // per month
   reason: string;
+  tip: string;
 }
 
 /**
- * Suggests a monthly budget for flexible categories, based on the last six
- * complete months: aim for what you spent in your three lowest months, but
- * never cut more than the category's flexibility (10% groceries, 30% dining
- * and shopping...). Skips savings under $10 a month.
+ * Suggests a lower monthly budget for each flexible variable category, from
+ * up to 12 months of history: aim for what you spent in your lowest-spending
+ * quarter of months, but never cut more than the category's flexibility (10%
+ * groceries, 30% dining and shopping...). Skips savings under $10 a month.
  */
 export function cutSuggestions(
   rows: FlowRowLike[],
   categories: CategoryLike[],
   now: Date,
+  firstDate: string | null = null,
 ): CutSuggestion[] {
-  const months = Array.from({ length: 6 }, (_, i) => monthStart(now, -(i + 1)));
+  const months = [...trailingMonths(now, firstDate)];
+  if (months.length < 3) return [];
   const out: CutSuggestion[] = [];
   for (const cat of categories) {
-    if (cat.kind !== 'expense') continue;
-    const flex = flexibility(cat);
-    if (!flex) continue;
+    if (cat.kind !== 'expense' || cat.expense_type === 'fixed') continue;
+    const rule = cutRule(cat);
+    if (!rule) continue;
     const perMonth = months.map((m) =>
       -rows
         .filter((r) => r.month === m && r.category_id === cat.id && (r.flow === 'spending' || r.flow === 'refund'))
         .reduce((s, r) => s + r.total, 0),
     );
-    const active = perMonth.filter((v) => v > 0).length;
-    if (active < 3) continue; // not enough history to judge
+    if (perMonth.filter((v) => v > 0).length < 3) continue; // not enough history
     const average = perMonth.reduce((s, v) => s + v, 0) / months.length;
-    const lowest3 = [...perMonth].sort((a, b) => a - b).slice(0, 3);
-    const lowAvg = lowest3.reduce((s, v) => s + v, 0) / 3;
-    const floor = average * (1 - flex);
+    const k = Math.max(3, Math.round(months.length / 4));
+    const lowest = [...perMonth].sort((a, b) => a - b).slice(0, k);
+    const lowAvg = lowest.reduce((s, v) => s + v, 0) / k;
+    const floor = average * (1 - rule.flex);
     const target = Math.ceil(Math.max(lowAvg, floor) / 10) * 10;
     const savings = average - target;
     if (savings < 10) continue;
@@ -168,9 +215,40 @@ export function cutSuggestions(
       savings,
       reason:
         lowAvg >= floor
-          ? 'Matches what you spent in your 3 lowest months'
-          : `A ${Math.round(flex * 100)}% trim from your average`,
+          ? `What you spent in your ${k} lowest months`
+          : `A ${Math.round(rule.flex * 100)}% trim from your average`,
+      tip: rule.tip,
     });
   }
   return out.sort((a, b) => b.savings - a.savings);
+}
+
+// ---------------------------------------------------------------------------
+// Even savings per paycheck
+// ---------------------------------------------------------------------------
+
+/**
+ * Splits what's left after bills into the same savings and the same
+ * spending money on every check.
+ *
+ * spendPerCheck: your variable spending (budgets or average) spread over a
+ * month's paychecks. Savings is what's left of a typical check after bills
+ * and that spending, unless you've set an amount yourself.
+ */
+export function paycheckSplit(opts: {
+  typicalAfterBills: number;
+  variablePerMonth: number;
+  checksPerMonth: number;
+  savingsOverride: number | null;
+}) {
+  const spendPerCheck = opts.checksPerMonth > 0 ? opts.variablePerMonth / opts.checksPerMonth : 0;
+  const autoSavings = Math.max(0, Math.floor((opts.typicalAfterBills - spendPerCheck) / 10) * 10);
+  const savings = opts.savingsOverride ?? autoSavings;
+  return {
+    spendPerCheck,
+    autoSavings,
+    savings,
+    leftToSpend: opts.typicalAfterBills - savings,
+    auto: opts.savingsOverride == null,
+  };
 }
