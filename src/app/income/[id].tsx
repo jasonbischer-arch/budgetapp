@@ -5,15 +5,28 @@ import { Alert, Platform, View } from 'react-native';
 import { Button, Card, ErrorText, Input, Row, Screen, Segmented, T } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
 import { useAuth } from '@/lib/auth';
-import { deleteIncomeSource, fetchIncomeSources, Frequency, saveIncomeSource } from '@/lib/data';
-import { shortDate, weekday } from '@/lib/format';
+import {
+  deleteIncomeSource,
+  fetchIncomeSources,
+  Frequency,
+  IncomeSource,
+  saveIncomeSource,
+  WeekendShift,
+} from '@/lib/data';
+import { money, shortDate, weekday } from '@/lib/format';
 import { addDays, paydays, today } from '@/lib/schedule';
 
 const FREQUENCIES: { value: Frequency; label: string }[] = [
   { value: 'weekly', label: 'Weekly' },
-  { value: 'biweekly', label: 'Every 2 wks' },
-  { value: 'semimonthly', label: 'Twice a month' },
+  { value: 'biweekly', label: 'Biweekly' },
+  { value: 'semimonthly', label: '2× month' },
   { value: 'monthly', label: 'Monthly' },
+];
+
+const WEEKEND: { value: WeekendShift; label: string }[] = [
+  { value: 'before', label: 'Friday before' },
+  { value: 'after', label: 'Monday after' },
+  { value: 'none', label: 'Same day' },
 ];
 
 const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
@@ -40,6 +53,8 @@ export default function IncomeEditor() {
   const [anchor, setAnchor] = useState('');
   const [day1, setDay1] = useState('');
   const [day2, setDay2] = useState('');
+  const [weekendShift, setWeekendShift] = useState<WeekendShift>('before');
+  const [existing, setExisting] = useState<IncomeSource | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,6 +70,8 @@ export default function IncomeEditor() {
         setAnchor(s.anchor_date ?? '');
         setDay1(s.day1 ? String(s.day1) : '');
         setDay2(s.day2 ? String(s.day2) : '');
+        setWeekendShift(s.weekend_shift ?? 'before');
+        setExisting(s);
       })
       .catch((e) => setError(String(e)));
   }, [id, isNew]);
@@ -68,6 +85,7 @@ export default function IncomeEditor() {
     anchor_date: needsAnchor && isDate(anchorISO) ? anchorISO : null,
     day1: frequency === 'semimonthly' || frequency === 'monthly' ? dayNum(day1) : null,
     day2: frequency === 'semimonthly' ? dayNum(day2) : null,
+    weekend_shift: needsAnchor ? ('none' as const) : weekendShift,
   };
   const valid =
     !!draft.name &&
@@ -89,7 +107,9 @@ export default function IncomeEditor() {
 
   function remove() {
     const go = async () => {
-      await deleteIncomeSource(id).catch((e) => setError(String(e)));
+      await deleteIncomeSource({ id, detection_key: existing?.detection_key ?? null }).catch((e) =>
+        setError(String(e)),
+      );
       router.back();
     };
     if (Platform.OS === 'web') {
@@ -104,6 +124,22 @@ export default function IncomeEditor() {
 
   return (
     <Screen>
+      {existing?.detection_key && (
+        <Card style={{ padding: Spacing.md }}>
+          <T style={{ fontWeight: '600' }}>Found in your bank deposits</T>
+          {existing.average_amount != null && (
+            <T variant="small">
+              Average {money(existing.average_amount)} over {existing.occurrences} deposits
+              {existing.last_paid ? ` · last ${money(existing.last_amount ?? 0)} on ${shortDate(existing.last_paid)}` : ''}
+            </T>
+          )}
+          <T variant="small">
+            {existing.auto
+              ? 'Kept up to date automatically. Saving changes here makes them yours, and the amount and schedule stop updating.'
+              : 'You edited this paycheck, so only the average and last-paid figures update automatically.'}
+          </T>
+        </Card>
+      )}
       <Card>
         <T variant="small">Name</T>
         <Input value={name} onChangeText={setName} placeholder="e.g. Jason's paycheck" maxLength={80} />
@@ -136,6 +172,12 @@ export default function IncomeEditor() {
           <>
             <T variant="small">Payday (day of month)</T>
             <Input value={day1} onChangeText={setDay1} placeholder="1" keyboardType="number-pad" />
+          </>
+        )}
+        {!needsAnchor && (
+          <>
+            <T variant="small">If payday falls on a weekend, it arrives</T>
+            <Segmented options={WEEKEND} value={weekendShift} onChange={setWeekendShift} />
           </>
         )}
         {preview.length > 0 && (

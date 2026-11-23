@@ -3,6 +3,7 @@
 // it), and runs the first sync.
 import {
   adminClient,
+  detectPaychecksSafely,
   HttpError,
   json,
   requireHousehold,
@@ -67,5 +68,7 @@ serve(async (req) => {
   if (tokenErr) throw tokenErr;
 
   const result = await syncItem(admin, exchanged.item_id, householdId);
+  // A new bank brings months of history: look for paychecks right away.
+  await detectPaychecksSafely(admin, householdId);
   return json(req, { itemId: exchanged.item_id, status: result.status, added: result.added });
 });

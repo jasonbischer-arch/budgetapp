@@ -21,13 +21,7 @@ import {
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
-import {
-  Category,
-  fetchIncomeTransactions,
-  saveIncomeSource,
-  setCategoryBudgets,
-  updateCategoryBudget,
-} from '@/lib/data';
+import { Category, IncomeSource, setCategoryBudgets, updateCategoryBudget } from '@/lib/data';
 import { money, moneyWhole, monthShort, ordinal, shortDate, weekday } from '@/lib/format';
 import {
   debtDetails,
@@ -39,9 +33,7 @@ import { cutSuggestions, periodMonths, spendingByCategory } from '@/lib/insights
 import {
   addDays,
   buildPaycheckPlan,
-  detectIncome,
   endOfMonth,
-  IncomeSuggestion,
   monthlyAmount,
   paydays,
   PlannedCheck,
@@ -406,51 +398,44 @@ function BillsView({ data, reload }: { data: HouseholdData; reload: () => void }
 // Income
 // ---------------------------------------------------------------------------
 
-function scheduleLabel(s: { frequency: string; day1: number | null; day2: number | null }) {
+function scheduleLabel(s: Pick<IncomeSource, 'frequency' | 'day1' | 'day2' | 'anchor_date'>) {
   switch (s.frequency) {
     case 'weekly':
-      return 'Every week';
+      return s.anchor_date ? `Every ${weekday(s.anchor_date)}` : 'Every week';
     case 'biweekly':
-      return 'Every 2 weeks';
+      return s.anchor_date ? `Every other ${weekday(s.anchor_date)}` : 'Every 2 weeks';
     case 'semimonthly':
-      return `The ${ordinal(s.day1 ?? 1)} and ${ordinal(s.day2 ?? 15)}`;
+      return `The ${ordinal(s.day1 ?? 1)} and ${s.day2 === 31 ? 'last day' : ordinal(s.day2 ?? 15)}`;
     default:
-      return `The ${ordinal(s.day1 ?? 1)} of each month`;
+      return s.day1 === 31 ? 'Last day of each month' : `The ${ordinal(s.day1 ?? 1)} of each month`;
   }
 }
 
 function IncomeView({ data, reload }: { data: HouseholdData; reload: () => void }) {
   const c = useTheme();
-  const { household } = useAuth();
-  const [suggestions, setSuggestions] = useState<IncomeSuggestion[]>([]);
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchIncomeTransactions(addDays(today(), -120))
-      .then((txns) => setSuggestions(detectIncome(txns)))
-      .catch(() => setSuggestions([]));
-  }, []);
-
-  const existing = data.incomes.map((s) => s.name.toLowerCase());
-  const fresh = suggestions.filter(
-    (s) => !existing.some((n) => n.includes(s.name.toLowerCase()) || s.name.toLowerCase().includes(n)),
-  );
   const monthly = data.incomes.reduce((s, x) => s + monthlyAmount(x.frequency, x.amount), 0);
+  const detected = data.incomes.some((s) => s.detection_key);
 
-  async function addSuggestion(s: IncomeSuggestion) {
-    if (!household) return;
+  async function checkNow() {
+    setChecking(true);
+    setErr(null);
+    setResult(null);
     try {
-      await saveIncomeSource(household.id, {
-        name: s.name,
-        amount: s.amount,
-        frequency: s.frequency,
-        anchor_date: s.anchor_date,
-        day1: s.day1,
-        day2: s.day2,
-      });
+      const r = await callFunction<{ found: number; added: number }>('paychecks-detect');
+      setResult(
+        r.found === 0
+          ? 'No regular paychecks found in the last 7 months of deposits.'
+          : `Found ${r.found} paycheck${r.found === 1 ? '' : 's'}${r.added ? `, added ${r.added} new` : ''}.`,
+      );
       reload();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChecking(false);
     }
   }
 
@@ -461,10 +446,24 @@ function IncomeView({ data, reload }: { data: HouseholdData; reload: () => void 
         <Stat label="Paychecks" value={String(data.incomes.length)} />
       </Row>
 
+      <Card style={{ backgroundColor: c.primarySoft, borderColor: c.primarySoft, padding: Spacing.md }}>
+        <T>
+          Paychecks are found automatically from your bank deposits after every sync: who pays
+          you, the average amount, and the days they land, including when a weekend payday comes
+          early.
+        </T>
+        <Button title="Check deposits now" kind="secondary" loading={checking} onPress={checkNow} />
+        {result && <T variant="small">{result}</T>}
+      </Card>
+
       <SectionHeader title="Paychecks" action="+ Add" onAction={() => router.push('/income/new')} />
       <Card>
         {data.incomes.length === 0 && (
-          <T variant="muted">Add each paycheck with its schedule, e.g. every other Friday, or the 7th and 22nd.</T>
+          <T variant="muted">
+            {detected
+              ? 'All detected paychecks were removed. Add one by hand, or check deposits again.'
+              : 'None found yet. Add each paycheck by hand, e.g. every other Friday, or the 7th and 22nd.'}
+          </T>
         )}
         {data.incomes.map((src, i) => {
           const next = paydays(src, today(), addDays(today(), 62))[0];
@@ -475,7 +474,12 @@ function IncomeView({ data, reload }: { data: HouseholdData; reload: () => void 
                 onPress={() => router.push({ pathname: '/income/[id]', params: { id: src.id } })}
                 style={({ pressed }) => [{ gap: 4 }, pressed && { opacity: 0.6 }]}>
                 <Row style={{ justifyContent: 'space-between' }}>
-                  <T style={{ fontWeight: '600' }}>{src.name}</T>
+                  <Row style={{ gap: 6, flexShrink: 1 }}>
+                    <T style={{ fontWeight: '600', flexShrink: 1 }} numberOfLines={1}>
+                      {src.name}
+                    </T>
+                    {src.auto && <Badge text="AUTO" tone="primary" />}
+                  </Row>
                   <T variant="money" color={c.positive}>
                     {money(src.amount)}
                   </T>
@@ -484,35 +488,17 @@ function IncomeView({ data, reload }: { data: HouseholdData; reload: () => void 
                   {scheduleLabel(src)}
                   {next ? ` · next ${weekday(next.date)}, ${shortDate(next.date)}` : ''}
                 </T>
+                {src.detection_key && src.average_amount != null && (
+                  <T variant="small">
+                    Avg {money(src.average_amount)} over {src.occurrences} deposits
+                    {src.last_paid ? ` · last ${money(src.last_amount ?? 0)} on ${shortDate(src.last_paid)}` : ''}
+                  </T>
+                )}
               </Pressable>
             </View>
           );
         })}
       </Card>
-
-      {fresh.length > 0 && (
-        <>
-          <SectionHeader title="Found in your deposits" />
-          <Card>
-            {fresh.map((s, i) => (
-              <View key={s.name} style={{ gap: Spacing.sm }}>
-                {i > 0 && <Divider />}
-                <Row style={{ justifyContent: 'space-between' }}>
-                  <View style={{ flexShrink: 1 }}>
-                    <T style={{ fontWeight: '600' }} numberOfLines={1}>
-                      {s.name}
-                    </T>
-                    <T variant="small">
-                      {money(s.amount)} · {scheduleLabel(s)} · seen {s.occurrences}×
-                    </T>
-                  </View>
-                  <Button title="Add" kind="secondary" onPress={() => addSuggestion(s)} />
-                </Row>
-              </View>
-            ))}
-          </Card>
-        </>
-      )}
       <ErrorText message={err} />
     </>
   );

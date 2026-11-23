@@ -5,6 +5,7 @@
 //    bank. The secret is generated in the database and kept in Vault.
 import {
   adminClient,
+  detectPaychecksSafely,
   HttpError,
   json,
   requireHousehold,
@@ -68,5 +69,10 @@ serve(async (req) => {
 
   const results = [];
   for (const item of items) results.push(await syncItem(admin, item.id, item.household_id));
+
+  // Fresh deposits may change paychecks: re-check once per household.
+  for (const householdId of new Set(items.map((i) => i.household_id))) {
+    await detectPaychecksSafely(admin, householdId);
+  }
   return json(req, { results });
 });

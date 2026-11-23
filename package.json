@@ -43,7 +43,7 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --no-warnings tests/schedule.test.ts && node --experimental-strip-types --no-warnings tests/insights.test.ts"
+    "test": "node --experimental-strip-types --no-warnings tests/schedule.test.ts && node --experimental-strip-types --no-warnings tests/insights.test.ts && node --experimental-strip-types --no-warnings tests/paychecks.test.ts"
   },
   "private": true
 }

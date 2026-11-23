@@ -39,6 +39,8 @@ export interface Category {
 
 export type Frequency = 'weekly' | 'biweekly' | 'semimonthly' | 'monthly';
 
+export type WeekendShift = 'none' | 'before' | 'after';
+
 export interface IncomeSource {
   id: string;
   name: string;
@@ -47,7 +49,22 @@ export interface IncomeSource {
   anchor_date: string | null;
   day1: number | null;
   day2: number | null;
+  weekend_shift: WeekendShift;
+  /** Managed by paycheck detection (amount/schedule follow the bank). */
+  auto: boolean;
+  /** Set when this paycheck was found in bank deposits. */
+  detection_key: string | null;
+  average_amount: number | null;
+  last_amount: number | null;
+  last_paid: string | null;
+  occurrences: number | null;
 }
+
+/** The fields you can edit on a paycheck. */
+export type IncomeSourceInput = Pick<
+  IncomeSource,
+  'name' | 'amount' | 'frequency' | 'anchor_date' | 'day1' | 'day2' | 'weekend_shift'
+>;
 
 export type BillFrequency = 'monthly' | 'quarterly' | 'yearly';
 
@@ -83,14 +100,6 @@ export interface FlowRow {
   n: number;
 }
 
-export interface FlowTransaction {
-  id: string;
-  date: string;
-  amount: number;
-  flow: Flow | 'excluded' | 'ignored';
-  description: string;
-  merchant: string | null;
-}
 
 export interface Transaction {
   id: string;
@@ -224,18 +233,34 @@ export function monthRange(year: number, monthIndex: number) {
 const num = (v: unknown) => (v == null ? null : Number(v));
 
 export async function fetchIncomeSources(): Promise<IncomeSource[]> {
-  const rows = unwrap(await supabase.from('income_sources').select('*').order('created_at')) as IncomeSource[];
-  return rows.map((r) => ({ ...r, amount: Number(r.amount) }));
+  const rows = unwrap(
+    await supabase.from('income_sources').select('*').eq('dismissed', false).order('created_at'),
+  ) as IncomeSource[];
+  return rows.map((r) => ({
+    ...r,
+    amount: Number(r.amount),
+    average_amount: num(r.average_amount),
+    last_amount: num(r.last_amount),
+  }));
 }
 
-export async function saveIncomeSource(householdId: string, src: Omit<IncomeSource, 'id'> & { id?: string }) {
+/**
+ * Saves a paycheck. Editing a detected paycheck makes it yours: detection
+ * stops changing its amount and schedule (it still refreshes the stats).
+ */
+export async function saveIncomeSource(householdId: string, src: IncomeSourceInput & { id?: string }) {
   const { id, ...fields } = src;
-  if (id) unwrap(await supabase.from('income_sources').update(fields).eq('id', id));
+  if (id) unwrap(await supabase.from('income_sources').update({ ...fields, auto: false }).eq('id', id));
   else unwrap(await supabase.from('income_sources').insert({ ...fields, household_id: householdId }));
 }
 
-export async function deleteIncomeSource(id: string) {
-  unwrap(await supabase.from('income_sources').delete().eq('id', id));
+/** Deletes a paycheck; a detected one is hidden so detection won't re-add it. */
+export async function deleteIncomeSource(src: Pick<IncomeSource, 'id' | 'detection_key'>) {
+  if (src.detection_key) {
+    unwrap(await supabase.from('income_sources').update({ dismissed: true }).eq('id', src.id));
+  } else {
+    unwrap(await supabase.from('income_sources').delete().eq('id', src.id));
+  }
 }
 
 export async function fetchBills(): Promise<Bill[]> {
@@ -267,19 +292,6 @@ export async function fetchLiabilities(): Promise<Liability[]> {
 export async function fetchMonthlyFlows(from: string): Promise<FlowRow[]> {
   const rows = unwrap(await supabase.rpc('monthly_flows', { p_from: from })) as FlowRow[];
   return rows.map((r) => ({ ...r, total: Number(r.total), n: Number(r.n) }));
-}
-
-/** Money-in transactions since a date (for spotting paychecks). */
-export async function fetchIncomeTransactions(from: string): Promise<FlowTransaction[]> {
-  const rows = unwrap(
-    await supabase
-      .from('transaction_flows')
-      .select('id, date, amount, flow, description, merchant')
-      .eq('flow', 'income')
-      .gte('date', from)
-      .order('date'),
-  ) as FlowTransaction[];
-  return rows.map((r) => ({ ...r, amount: Number(r.amount) }));
 }
 
 /** The date of the household's oldest transaction, if any. */

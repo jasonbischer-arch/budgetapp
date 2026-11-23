@@ -7,6 +7,7 @@ import {
   PlaidTransaction,
   TransactionsSyncResponse,
 } from "./plaid.ts";
+import { daysAgo, detectPaychecks } from "./paychecks.ts";
 
 // ---------------------------------------------------------------------------
 // HTTP helpers
@@ -324,5 +325,92 @@ export async function syncItem(
       last_error: message,
     }).eq("id", itemId);
     return { itemId, status: disconnected ? "disconnected" : "error", added: 0 };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Paycheck detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Looks for regular paychecks in the last ~7 months of deposits and keeps the
+ * household's income sources in step:
+ *  - new active paycheck          -> added (auto)
+ *  - auto source                  -> amount and schedule follow the bank
+ *  - source you edited            -> only the stats (average, last paid) refresh
+ *  - source you deleted           -> left alone
+ */
+export async function detectPaychecksForHousehold(admin: SupabaseClient, householdId: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data: deposits, error } = await admin
+    .from("transaction_flows")
+    .select("date, amount, description, merchant, category_detailed")
+    .eq("household_id", householdId)
+    .eq("flow", "income")
+    .gte("date", daysAgo(today, 210));
+  if (error) throw error;
+
+  const found = detectPaychecks(
+    (deposits ?? []).map((d) => ({ ...d, amount: Number(d.amount) })),
+    today,
+  );
+
+  const { data: existing } = await admin
+    .from("income_sources")
+    .select("id, auto, dismissed, detection_key")
+    .eq("household_id", householdId)
+    .not("detection_key", "is", null);
+
+  const now = new Date().toISOString();
+  let added = 0;
+  let updated = 0;
+  for (const p of found) {
+    const match = (existing ?? []).find((e) => e.detection_key === p.key);
+    const stats = {
+      average_amount: p.average,
+      last_amount: p.last_amount,
+      last_paid: p.last_paid,
+      occurrences: p.occurrences,
+      detected_at: now,
+    };
+    const schedule = {
+      amount: p.average,
+      frequency: p.frequency,
+      anchor_date: p.anchor_date,
+      day1: p.day1,
+      day2: p.day2,
+      weekend_shift: p.weekend_shift,
+    };
+    if (!match) {
+      if (!p.active) continue; // don't add a job that has stopped paying
+      const { error: e } = await admin.from("income_sources").insert({
+        household_id: householdId,
+        name: p.name,
+        auto: true,
+        detection_key: p.key,
+        ...schedule,
+        ...stats,
+      });
+      if (e) console.error("adding detected paycheck failed:", e.message);
+      else added++;
+    } else if (!match.dismissed) {
+      const { error: e } = await admin
+        .from("income_sources")
+        .update(match.auto ? { ...schedule, ...stats } : stats)
+        .eq("id", match.id);
+      if (e) console.error("updating detected paycheck failed:", e.message);
+      else updated++;
+    }
+  }
+  return { found: found.length, added, updated };
+}
+
+/** Runs detection without letting a failure break the caller (e.g. a sync). */
+export async function detectPaychecksSafely(admin: SupabaseClient, householdId: string) {
+  try {
+    return await detectPaychecksForHousehold(admin, householdId);
+  } catch (e) {
+    console.error("paycheck detection failed:", e instanceof Error ? e.message : e);
+    return null;
   }
 }

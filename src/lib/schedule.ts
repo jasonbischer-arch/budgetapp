@@ -75,6 +75,8 @@ export interface PaySchedule {
   anchor_date: ISODate | null;
   day1: number | null;
   day2: number | null;
+  /** Twice-monthly/monthly payday on a weekend: Friday before, Monday after. */
+  weekend_shift?: 'none' | 'before' | 'after';
 }
 
 export interface BillSchedule {
@@ -103,10 +105,11 @@ export function paydays(src: PaySchedule, from: ISODate, to: ISODate): Occurrenc
     for (let d = addDays(src.anchor_date, k * step); d <= to; d = addDays(d, step)) dates.push(d);
   } else {
     const days = src.frequency === 'semimonthly' ? [src.day1, src.day2] : [src.day1];
-    for (const { year, month } of monthsBetween(from, to)) {
+    // Look a few days past each end: a weekend shift can move a payday in.
+    for (const { year, month } of monthsBetween(addDays(from, -3), addDays(to, 3))) {
       for (const day of days) {
         if (!day) continue;
-        const d = dayOfMonth(year, month, day);
+        const d = shiftWeekend(dayOfMonth(year, month, day), src.weekend_shift ?? 'none');
         if (d >= from && d <= to) dates.push(d);
       }
     }
@@ -118,6 +121,14 @@ export function paydays(src: PaySchedule, from: ISODate, to: ISODate): Occurrenc
     date,
     amount: src.amount,
   }));
+}
+
+/** Moves a Saturday/Sunday date to the Friday before or the Monday after. */
+export function shiftWeekend(date: ISODate, rule: 'none' | 'before' | 'after'): ISODate {
+  const dow = parseISO(date).getDay();
+  if (rule === 'none' || (dow !== 0 && dow !== 6)) return date;
+  if (rule === 'before') return addDays(date, dow === 6 ? -1 : -2);
+  return addDays(date, dow === 6 ? 2 : 1);
 }
 
 /** Due dates for a bill within [from, to]. */
@@ -318,84 +329,4 @@ export function buildPaycheckPlan(
   }
   const target = checks.length ? checks.reduce((s, c) => s + c.leftover, 0) / checks.length : 0;
   return { checks, fromCash: fromCash.sort((a, b) => a.date.localeCompare(b.date)), target };
-}
-
-// ---------------------------------------------------------------------------
-// Paycheck detection
-// ---------------------------------------------------------------------------
-
-export interface IncomeSuggestion {
-  name: string;
-  amount: number;
-  frequency: PaySchedule['frequency'];
-  anchor_date: ISODate | null;
-  day1: number | null;
-  day2: number | null;
-  occurrences: number;
-}
-
-const median = (xs: number[]) => {
-  const s = [...xs].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
-};
-
-function normalizeName(s: string) {
-  return s
-    .toUpperCase()
-    .replace(/[0-9#*]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 40);
-}
-
-function titleCase(s: string) {
-  return s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-/**
- * Finds regular deposits (paychecks) in money-in transactions: same payer,
- * at least 3 times, $100+, at a weekly, every-2-weeks, twice-monthly or
- * monthly rhythm.
- */
-export function detectIncome(
-  txns: { date: ISODate; amount: number; description: string; merchant: string | null }[],
-): IncomeSuggestion[] {
-  const groups = new Map<string, { date: ISODate; amount: number; label: string }[]>();
-  for (const t of txns) {
-    if (t.amount < 100) continue;
-    const label = t.merchant || t.description;
-    const key = normalizeName(label);
-    if (!key) continue;
-    groups.set(key, [...(groups.get(key) ?? []), { date: t.date, amount: t.amount, label }]);
-  }
-
-  const out: IncomeSuggestion[] = [];
-  for (const [, items] of groups) {
-    if (items.length < 3) continue;
-    items.sort((a, b) => a.date.localeCompare(b.date));
-    const gaps = items.slice(1).map((it, i) => daysBetween(items[i].date, it.date));
-    const gap = median(gaps);
-    const last = items.at(-1)!;
-    const amount = Math.round(median(items.slice(-3).map((i) => i.amount)) * 100) / 100;
-    const base = { name: titleCase(normalizeName(last.label)), amount, occurrences: items.length };
-
-    if (gap >= 6 && gap <= 8) {
-      out.push({ ...base, frequency: 'weekly', anchor_date: last.date, day1: null, day2: null });
-    } else if (gap >= 13 && gap <= 15) {
-      // Twice-monthly pay also has ~15-day gaps; tell them apart by whether
-      // the day of the month repeats.
-      const days = items.map((i) => Number(i.date.slice(8)));
-      const distinct = [...new Set(days)];
-      if (distinct.length <= 3 && items.length >= 4) {
-        const sorted = distinct.sort((a, b) => a - b);
-        out.push({ ...base, frequency: 'semimonthly', anchor_date: null, day1: sorted[0], day2: sorted.at(-1)! });
-      } else {
-        out.push({ ...base, frequency: 'biweekly', anchor_date: last.date, day1: null, day2: null });
-      }
-    } else if (gap >= 27 && gap <= 33) {
-      out.push({ ...base, frequency: 'monthly', anchor_date: null, day1: Number(last.date.slice(8)), day2: null });
-    }
-  }
-  return out.sort((a, b) => b.amount - a.amount);
 }

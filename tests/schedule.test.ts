@@ -1,4 +1,4 @@
-import { buildPaycheckPlan, paydays, dueDates, detectIncome, addDays } from "../src/lib/schedule.ts";
+import { buildPaycheckPlan, paydays, dueDates } from "../src/lib/schedule.ts";
 
 const assert = (c: unknown, m: string) => { if (!c) throw new Error("FAIL: " + m); console.log("ok -", m); };
 
@@ -39,13 +39,12 @@ const lefts = plan.checks.map(c => c.leftover);
 console.log("  leftover spread $" + (Math.max(...lefts) - Math.min(...lefts)).toFixed(0));
 assert(plan.checks.every(c => c.leftover > 0), "no check goes negative");
 
-// Detection
-const tx: { date: string; amount: number; description: string; merchant: string | null }[] = [];
-for (let d = "2026-05-01"; d <= "2026-11-20"; d = addDays(d, 14)) tx.push({ date: d, amount: 2000, description: "ACME CORP PAYROLL 1234", merchant: null });
-for (const m of ["06","07","08","09","10","11"]) for (const day of ["07","22"]) tx.push({ date: `2026-${m}-${day}`, amount: 1600, description: "GUSTO PAY 99881", merchant: null });
-tx.push({ date: "2026-09-03", amount: 250, description: "VENMO", merchant: null });
-const sug = detectIncome(tx);
-console.log("  detected:", JSON.stringify(sug));
-assert(sug.some(s => s.frequency === "biweekly" && s.amount === 2000), "detects biweekly paycheck");
-assert(sug.some(s => s.frequency === "semimonthly" && s.day1 === 7 && s.day2 === 22), "detects 7th/22nd paycheck");
-assert(!sug.some(s => s.name.includes("Venmo")), "ignores one-off deposits");
+// Weekend paydays: Nov 7, 2026 is a Saturday -> paid Friday Nov 6.
+const wifeShift = { ...wife, weekend_shift: "before" as const };
+const nov = paydays(wifeShift, "2026-11-01", "2026-11-30").map(p => p.date);
+assert(JSON.stringify(nov) === JSON.stringify(["2026-11-06", "2026-11-20"]), "weekend paydays move to Friday: " + nov.join(", "));
+const after = paydays({ ...wife, weekend_shift: "after" as const }, "2026-11-01", "2026-11-30").map(p => p.date);
+assert(after[0] === "2026-11-09", "or to Monday after");
+// A payday shifted from the 1st into the previous month still appears.
+const firsts = { id: "f", name: "f", amount: 1, frequency: "monthly" as const, anchor_date: null, day1: 1, day2: null, weekend_shift: "before" as const };
+assert(paydays(firsts, "2026-07-25", "2026-07-31").map(p => p.date)[0] === "2026-07-31", "Aug 1 (Sat) payday lands Fri Jul 31");
