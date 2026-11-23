@@ -1,0 +1,10 @@
+# Supabase CLI config. Run `npx supabase init` if the CLI asks for the
+# remaining defaults; keep the function settings below.
+project_id = "budgetapp"
+
+[functions.teller-enroll]
+verify_jwt = true
+
+# Auth is checked inside the function: either a user JWT or the cron secret.
+[functions.teller-sync]
+verify_jwt = false
