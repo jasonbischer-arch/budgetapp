@@ -1,8 +1,8 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Alert, Platform, Pressable, View } from 'react-native';
+import { Alert, Platform, Pressable, Switch, View } from 'react-native';
 
-import { Button, Card, ErrorText, Input, Screen, T } from '@/components/ui';
+import { Button, Card, ErrorText, Input, Row, Screen, T } from '@/components/ui';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
@@ -14,9 +14,11 @@ import {
   fetchAccounts,
   fetchBills,
   fetchManualAssets,
+  ManualAsset,
+  refreshHomeValue,
   saveManualAsset,
 } from '@/lib/data';
-import { money } from '@/lib/format';
+import { money, timeAgo } from '@/lib/format';
 import { today } from '@/lib/schedule';
 
 const KINDS: { value: AssetKind; label: string; rate: number; hint: string }[] = [
@@ -52,6 +54,9 @@ export default function AssetEditor() {
   const [loanAccounts, setLoanAccounts] = useState<Account[]>([]);
   const [debtBills, setDebtBills] = useState<Bill[]>([]);
   const [original, setOriginal] = useState<{ value: number; date: string } | null>(null);
+  const [address, setAddress] = useState('');
+  const [autoValue, setAutoValue] = useState(false);
+  const [existing, setExisting] = useState<ManualAsset | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,6 +74,9 @@ export default function AssetEditor() {
         setValue(String(estimateToday(a.value, a.value_date, a.annual_change_pct)));
         setRate(String(a.annual_change_pct));
         setOriginal({ value: a.value, date: a.value_date });
+        setAddress(a.address ?? '');
+        setAutoValue(a.auto_value);
+        setExisting(a);
         setLoan(a.loan_account_id ? { account: a.loan_account_id } : a.loan_bill_id ? { bill: a.loan_bill_id } : null);
       }
     })().catch((e) => setError(String(e)));
@@ -77,7 +85,10 @@ export default function AssetEditor() {
   const kindInfo = KINDS.find((k) => k.value === kind)!;
   const amount = parseNum(value);
   const pct = parseNum(rate) ?? 0;
-  const valid = !!name.trim() && amount != null && amount >= 0 && pct >= -50 && pct <= 50;
+  const addressOk = !autoValue || address.trim().length >= 5;
+  // With automatic values on, the first lookup fills the value in.
+  const valueOk = autoValue ? amount == null || amount >= 0 : amount != null && amount >= 0;
+  const valid = !!name.trim() && valueOk && addressOk && pct >= -50 && pct <= 50;
   const canHaveLoan = kind === 'home' || kind === 'vehicle';
 
   function pickKind(k: AssetKind) {
@@ -89,17 +100,31 @@ export default function AssetEditor() {
     if (!household || !valid) return;
     setSaving(true);
     try {
-      await saveManualAsset(household.id, {
+      const useAuto = kind === 'home' && autoValue;
+      const savedId = await saveManualAsset(household.id, {
         ...(isNew ? {} : { id }),
         name: name.trim(),
         kind,
-        value: amount!,
+        value: amount ?? 0,
         // Entering a value resets the estimate's starting point to today.
         value_date: today(),
         annual_change_pct: pct,
         loan_account_id: canHaveLoan ? (loan?.account ?? null) : null,
         loan_bill_id: canHaveLoan ? (loan?.bill ?? null) : null,
+        address: kind === 'home' && address.trim() ? address.trim() : null,
+        auto_value: useAuto,
       });
+      // Turning on automatic values (or a new address): look it up now.
+      const addressChanged = (existing?.address ?? '') !== address.trim();
+      if (useAuto && (!existing?.valued_at || addressChanged)) {
+        const r = await refreshHomeValue(savedId).catch((e: Error) => ({ results: [{ id: savedId, status: 'error', error: e.message }] }));
+        const res = r.results.find((x) => x.id === savedId);
+        if (res?.status === 'error') {
+          setError(`Saved, but the value lookup failed: ${res.error}`);
+          setSaving(false);
+          return;
+        }
+      }
       router.back();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -157,7 +182,12 @@ export default function AssetEditor() {
           placeholder={kind === 'home' ? 'e.g. Our house' : kind === 'vehicle' ? 'e.g. 2021 Honda CR-V' : 'Name'}
         />
         <T variant="small">Current value</T>
-        <Input value={value} onChangeText={setValue} keyboardType="decimal-pad" placeholder="$0" />
+        <Input
+          value={value}
+          onChangeText={setValue}
+          keyboardType="decimal-pad"
+          placeholder={kind === 'home' && autoValue ? 'Filled in automatically' : '$0'}
+        />
         <T variant="small">{kindInfo.hint}</T>
         {original && original.date !== today() && (
           <T variant="small">
@@ -179,6 +209,44 @@ export default function AssetEditor() {
           {amount ? ` In a year: about ${money(amount * (1 + pct / 100))}.` : ''}
         </T>
       </Card>
+
+      {kind === 'home' && (
+        <Card>
+          <Row style={{ justifyContent: 'space-between' }}>
+            <View style={{ flex: 1 }}>
+              <T style={{ fontWeight: '600' }}>Update value automatically</T>
+              <T variant="small">Gets a market estimate on the 1st of every month.</T>
+            </View>
+            <Switch value={autoValue} onValueChange={setAutoValue} accessibilityLabel="Update value automatically" />
+          </Row>
+          {autoValue && (
+            <>
+              <T variant="small">Home address</T>
+              <Input
+                value={address}
+                onChangeText={setAddress}
+                placeholder="123 Main St, Springfield, IL 62701"
+                autoComplete="street-address"
+                maxLength={200}
+              />
+              <T variant="small">
+                Only this address is sent to RentCast, a property-data service, to get the estimate
+                (similar to a Zestimate). Estimates can be off; you can switch this off anytime.
+              </T>
+            </>
+          )}
+          {existing?.value_source === 'rentcast' && existing.valued_at && (
+            <T variant="small">
+              Last estimate {money(existing.value)}
+              {existing.value_low && existing.value_high
+                ? ` (range ${money(existing.value_low)}–${money(existing.value_high)})`
+                : ''}
+              , updated {timeAgo(existing.valued_at)}.
+            </T>
+          )}
+          {existing?.value_error && <ErrorText message={existing.value_error} />}
+        </Card>
+      )}
 
       {canHaveLoan && (
         <Card>

@@ -202,8 +202,10 @@ export default function NetWorth() {
           bank. Retirement accounts are shown before taxes.
         </T>
         <T variant="small">
-          • Homes and vehicles use your estimate, adjusted each year by the rate you choose (homes
-          default to +3%, vehicles to −15%). Update the value whenever you get a better number.
+          • Homes can update automatically: turn it on and add the address, and a market estimate
+          (similar to a Zestimate, from RentCast) is fetched on the 1st of each month. Otherwise
+          homes and vehicles use your estimate, adjusted each year by the rate you choose (homes
+          +3%, vehicles −15% by default).
         </T>
         <T variant="small">
           • Debts come from connected cards and loans, plus debts you entered in Bills. Each is
@@ -245,7 +247,12 @@ function Group({
                 <T variant="muted" numberOfLines={1} style={{ flexShrink: 1 }}>
                   {i.name}
                 </T>
-                {i.source === 'manual' && <Badge text={manual ? 'ESTIMATE' : 'MANUAL'} />}
+                {i.source === 'manual' && (
+                  <Badge
+                    text={manual?.value_error ? 'CHECK' : manual?.auto_value ? 'AUTO' : manual ? 'ESTIMATE' : 'MANUAL'}
+                    tone={manual?.value_error ? 'warning' : manual?.auto_value ? 'primary' : 'neutral'}
+                  />
+                )}
               </Row>
               <T variant="muted">{money(i.amount)}</T>
             </Row>

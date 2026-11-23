@@ -1,7 +1,7 @@
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { supabase } from './supabase';
+import { callFunction, supabase } from './supabase';
 
 export interface Account {
   id: string;
@@ -345,9 +345,29 @@ export interface ManualAsset {
   annual_change_pct: number;
   loan_account_id: string | null;
   loan_bill_id: string | null;
+  /** Homes only: address used for the automatic monthly value. */
+  address: string | null;
+  auto_value: boolean;
+  value_source: 'manual' | 'rentcast';
+  value_low: number | null;
+  value_high: number | null;
+  valued_at: string | null;
+  value_error: string | null;
 }
 
-export type ManualAssetInput = Omit<ManualAsset, 'id'>;
+/** Fields you edit; the valuation fields are written by the server. */
+export type ManualAssetInput = Omit<
+  ManualAsset,
+  'id' | 'value_source' | 'value_low' | 'value_high' | 'valued_at' | 'value_error'
+>;
+
+/** Looks up a home's value now (at most once a day per home). */
+export async function refreshHomeValue(assetId: string) {
+  return callFunction<{ results: { id: string; status: string; error?: string; value?: number }[] }>(
+    'home-values',
+    { assetId },
+  );
+}
 
 export interface NetWorthItem {
   section: 'asset' | 'liability';
@@ -387,13 +407,26 @@ export async function fetchNetWorthHistory(): Promise<NetWorthPoint[]> {
 
 export async function fetchManualAssets(): Promise<ManualAsset[]> {
   const rows = unwrap(await supabase.from('manual_assets').select('*').order('created_at')) as ManualAsset[];
-  return rows.map((r) => ({ ...r, value: Number(r.value), annual_change_pct: Number(r.annual_change_pct) }));
+  return rows.map((r) => ({
+    ...r,
+    value: Number(r.value),
+    annual_change_pct: Number(r.annual_change_pct),
+    value_low: r.value_low == null ? null : Number(r.value_low),
+    value_high: r.value_high == null ? null : Number(r.value_high),
+  }));
 }
 
+/** Saves an asset and returns its id. */
 export async function saveManualAsset(householdId: string, asset: ManualAssetInput & { id?: string }) {
   const { id, ...fields } = asset;
-  if (id) unwrap(await supabase.from('manual_assets').update(fields).eq('id', id));
-  else unwrap(await supabase.from('manual_assets').insert({ ...fields, household_id: householdId }));
+  if (id) {
+    unwrap(await supabase.from('manual_assets').update(fields).eq('id', id));
+    return id;
+  }
+  const row = unwrap(
+    await supabase.from('manual_assets').insert({ ...fields, household_id: householdId }).select('id').single(),
+  ) as { id: string };
+  return row.id;
 }
 
 export async function deleteManualAsset(id: string) {

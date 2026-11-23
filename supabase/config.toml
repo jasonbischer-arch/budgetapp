@@ -18,3 +18,6 @@ verify_jwt = false
 
 [functions.paychecks-detect]
 verify_jwt = false
+
+[functions.home-values]
+verify_jwt = false
