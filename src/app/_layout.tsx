@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useColorScheme } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { AppLock } from '@/components/app-lock';
 import { AuthProvider, useAuth } from '@/lib/auth';
 
 SplashScreen.preventAutoHideAsync();
@@ -21,21 +22,27 @@ function RootNavigator() {
   const ready = signedIn && !!household;
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Protected guard={!signedIn}>
-        <Stack.Screen name="sign-in" />
-      </Stack.Protected>
-      <Stack.Protected guard={signedIn && !household}>
-        <Stack.Screen name="household" />
-      </Stack.Protected>
-      <Stack.Protected guard={ready}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen
-          name="transaction/[id]"
-          options={{ presentation: 'modal', headerShown: true, title: 'Transaction' }}
-        />
-      </Stack.Protected>
-    </Stack>
+    <AppLock enabled={signedIn}>
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Protected guard={!signedIn}>
+          <Stack.Screen name="sign-in" />
+        </Stack.Protected>
+        <Stack.Protected guard={signedIn && !household}>
+          <Stack.Screen name="household" />
+        </Stack.Protected>
+        <Stack.Protected guard={ready}>
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen
+            name="transaction/[id]"
+            options={{
+              presentation: 'modal',
+              headerShown: true,
+              title: 'Transaction',
+            }}
+          />
+        </Stack.Protected>
+      </Stack>
+    </AppLock>
   );
 }
 

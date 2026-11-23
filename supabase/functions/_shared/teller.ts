@@ -1,9 +1,9 @@
 // Minimal Teller API client for Supabase Edge Functions (Deno).
 //
 // Teller authenticates with HTTP Basic auth (access token as the username)
-// and, outside the sandbox, a client certificate (mTLS). Put the certificate
-// and private key from the Teller dashboard in the TELLER_CERT and
-// TELLER_KEY secrets (PEM text).
+// and, outside the sandbox, a client certificate (mTLS). The certificate and
+// private key from the Teller dashboard live in the TELLER_CERT and
+// TELLER_KEY function secrets (PEM text).
 
 const TELLER_API = "https://api.teller.io";
 
@@ -19,7 +19,7 @@ function getClient(): Deno.HttpClient | undefined {
 
 export class TellerError extends Error {
   constructor(public status: number, public body: string) {
-    super(`Teller API ${status}: ${body}`);
+    super(`Teller API ${status}`);
   }
   /** The bank login needs to be reconnected by the user. */
   get needsReconnect() {
@@ -27,17 +27,31 @@ export class TellerError extends Error {
   }
 }
 
-export async function tellerGet<T>(path: string, accessToken: string): Promise<T> {
+async function tellerRequest(method: string, path: string, accessToken: string) {
   const client = getClient();
   const res = await fetch(`${TELLER_API}${path}`, {
+    method,
     headers: {
       Authorization: `Basic ${btoa(`${accessToken}:`)}`,
       Accept: "application/json",
     },
     ...(client ? { client } : {}),
   } as RequestInit);
-  if (!res.ok) throw new TellerError(res.status, await res.text());
-  return (await res.json()) as T;
+  if (!res.ok) {
+    const body = await res.text();
+    console.error(`Teller ${method} ${path.split("?")[0]} -> ${res.status}: ${body.slice(0, 300)}`);
+    throw new TellerError(res.status, body);
+  }
+  return res;
+}
+
+export async function tellerGet<T>(path: string, accessToken: string): Promise<T> {
+  return (await (await tellerRequest("GET", path, accessToken)).json()) as T;
+}
+
+/** Revokes this app's access to every account behind the token. */
+export async function tellerRevoke(accessToken: string) {
+  await tellerRequest("DELETE", "/accounts", accessToken);
 }
 
 export interface TellerAccount {

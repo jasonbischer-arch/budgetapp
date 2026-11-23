@@ -2,14 +2,13 @@ import { useState } from 'react';
 import { Alert, Platform, Pressable, Share, Switch, View } from 'react-native';
 
 import TellerConnect from '@/components/teller-connect';
-import { TellerEnrollment } from '@/components/teller-connect.shared';
+import { TELLER_APP_ID, TellerEnrollment } from '@/components/teller-connect.shared';
 import { Button, Card, Divider, ErrorText, Row, Screen, T } from '@/components/ui';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
 import {
   fetchAccounts,
   fetchEnrollments,
-  removeEnrollment,
   setAccountHidden,
   useQuery,
 } from '@/lib/data';
@@ -55,8 +54,8 @@ export default function Accounts() {
   }
 
   function confirmRemove(id: string, name: string) {
-    const go = () => run('remove', () => removeEnrollment(id));
-    const msg = `Remove ${name} and its transaction history from the app?`;
+    const go = () => run('remove', () => callFunction('teller-disconnect', { enrollmentId: id }));
+    const msg = `Remove ${name}? This revokes the app's access to the bank and deletes its transaction history from the app.`;
     if (Platform.OS === 'web') {
       if (window.confirm(msg)) go();
     } else {
@@ -75,7 +74,11 @@ export default function Accounts() {
         <View style={{ flex: 1 }}>
           <Button
             title="Connect a bank"
-            onPress={() => setConnecting({})}
+            onPress={() =>
+              TELLER_APP_ID
+                ? setConnecting({})
+                : setActionError('Teller app ID is missing. Add EXPO_PUBLIC_TELLER_APP_ID to .env and restart.')
+            }
             loading={busy === 'enroll'}
           />
         </View>

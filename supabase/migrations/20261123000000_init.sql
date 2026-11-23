@@ -8,7 +8,7 @@
 --     policies, so only the service role (Edge Functions) can read them.
 --     The app never sees a token after enrollment.
 
-create extension if not exists pgcrypto;
+create extension if not exists pgcrypto with schema extensions;
 
 -- ---------------------------------------------------------------------------
 -- Households
@@ -16,7 +16,7 @@ create extension if not exists pgcrypto;
 create table public.households (
   id uuid primary key default gen_random_uuid(),
   name text not null,
-  invite_code text not null unique default upper(substr(encode(gen_random_bytes(6), 'hex'), 1, 8)),
+  invite_code text not null unique default upper(substr(encode(extensions.gen_random_bytes(6), 'hex'), 1, 8)),
   created_at timestamptz not null default now()
 );
 

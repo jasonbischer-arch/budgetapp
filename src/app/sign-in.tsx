@@ -5,6 +5,8 @@ import { Button, Card, ErrorText, Input, Screen, T } from '@/components/ui';
 import { useTheme } from '@/hooks/use-theme';
 import { isConfigured, supabase } from '@/lib/supabase';
 
+const MIN_PASSWORD = 10;
+
 export default function SignIn() {
   const c = useTheme();
   const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in');
@@ -63,13 +65,16 @@ export default function SignIn() {
           onChangeText={setPassword}
           onSubmitEditing={submit}
         />
+        {mode === 'sign-up' && (
+          <T variant="small">Use at least {MIN_PASSWORD} characters. A passphrase works well.</T>
+        )}
         <ErrorText message={error} />
         {info && <T color={c.positive}>{info}</T>}
         <Button
           title={mode === 'sign-in' ? 'Sign in' : 'Create account'}
           onPress={submit}
           loading={busy}
-          disabled={!email || password.length < 6}
+          disabled={!email || password.length < (mode === 'sign-up' ? MIN_PASSWORD : 1)}
         />
         <Pressable onPress={() => setMode(mode === 'sign-in' ? 'sign-up' : 'sign-in')}>
           <T color={c.primary} style={{ textAlign: 'center' }}>

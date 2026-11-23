@@ -7,17 +7,61 @@ import {
   TellerTransaction,
 } from "./teller.ts";
 
-export const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+// Browsers may only call these functions from the app's own website. The
+// iPhone app sends no Origin header, so CORS doesn't apply to it. Add your
+// hosted domain to the ALLOWED_ORIGINS secret (comma separated) when you
+// publish the website.
+const DEFAULT_ORIGINS = ["http://localhost:8081", "http://127.0.0.1:8081"];
 
-export function json(body: unknown, status = 200) {
+function allowedOrigins() {
+  const extra = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+  return new Set([...DEFAULT_ORIGINS, ...extra]);
+}
+
+export function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("Origin");
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    Vary: "Origin",
+  };
+  if (origin && allowedOrigins().has(origin)) headers["Access-Control-Allow-Origin"] = origin;
+  return headers;
+}
+
+export function json(req: Request, body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...corsHeaders(req), "Content-Type": "application/json" },
   });
+}
+
+/** Runs a handler with CORS preflight and safe error responses. */
+export function serve(handler: (req: Request) => Promise<Response>) {
+  Deno.serve(async (req) => {
+    if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(req) });
+    if (req.method !== "POST") return json(req, { error: "Method not allowed" }, 405);
+    try {
+      return await handler(req);
+    } catch (e) {
+      if (e instanceof HttpError) return json(req, { error: e.message }, e.status);
+      // Log the details for us; show users a generic message.
+      console.error(e);
+      return json(req, { error: "Something went wrong. Please try again." }, 500);
+    }
+  });
+}
+
+/** Constant-time string comparison for secrets. */
+export function safeEqual(a: string, b: string) {
+  const ea = new TextEncoder().encode(a);
+  const eb = new TextEncoder().encode(b);
+  let diff = ea.length ^ eb.length;
+  for (let i = 0; i < Math.max(ea.length, eb.length); i++) diff |= (ea[i] ?? 0) ^ (eb[i] ?? 0);
+  return diff === 0;
 }
 
 /** Service-role client: bypasses RLS. Only ever used server-side. */
@@ -69,15 +113,10 @@ export async function syncEnrollment(
   enrollmentId: string,
   householdId: string,
 ): Promise<SyncResult> {
-  const { data: tokenRow } = await admin
-    .from("teller_tokens")
-    .select("access_token")
-    .eq("enrollment_id", enrollmentId)
-    .single();
-  if (!tokenRow) {
+  const token = await getToken(admin, enrollmentId);
+  if (!token) {
     return { enrollmentId, accounts: 0, transactions: 0, status: "error", error: "Missing token" };
   }
-  const token = tokenRow.access_token as string;
 
   const { data: enrollment } = await admin
     .from("teller_enrollments")
@@ -168,10 +207,16 @@ export async function syncEnrollment(
     return { enrollmentId, accounts: accounts.length, transactions: txnCount, status: "active" };
   } catch (e) {
     const disconnected = e instanceof TellerError && e.needsReconnect;
-    const message = e instanceof Error ? e.message : String(e);
+    console.error(`sync ${enrollmentId} failed`, e);
+    // Store a user-facing message only; details stay in the function logs.
+    const message = disconnected
+      ? "The bank needs you to sign in again."
+      : e instanceof TellerError
+      ? "The bank connection is temporarily unavailable."
+      : "Sync failed. We'll retry on the next sync.";
     await admin.from("teller_enrollments").update({
       status: disconnected ? "disconnected" : "error",
-      last_error: message.slice(0, 500),
+      last_error: message,
     }).eq("id", enrollmentId);
     return {
       enrollmentId,
@@ -181,4 +226,11 @@ export async function syncEnrollment(
       error: message,
     };
   }
+}
+
+/** Decrypts an enrollment's Teller token from Vault (service role only). */
+export async function getToken(admin: SupabaseClient, enrollmentId: string) {
+  const { data, error } = await admin.rpc("get_teller_token", { p_enrollment_id: enrollmentId });
+  if (error) throw error;
+  return (data as string | null) ?? null;
 }

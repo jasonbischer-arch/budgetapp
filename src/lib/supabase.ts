@@ -1,6 +1,7 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import { AppState, Platform } from 'react-native';
+
+import { secureStorage } from './secure-storage';
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -12,8 +13,8 @@ export const supabase = createClient(
   anonKey ?? 'not-configured',
   {
     auth: {
-      // On web, supabase-js uses localStorage by default.
-      ...(Platform.OS !== 'web' ? { storage: AsyncStorage } : {}),
+      // iPhone: the Keychain. Web: the browser's localStorage (the default).
+      ...(Platform.OS !== 'web' ? { storage: secureStorage } : {}),
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: Platform.OS === 'web',

@@ -131,10 +131,6 @@ export async function setAccountHidden(id: string, hidden: boolean) {
   unwrap(await supabase.from('accounts').update({ hidden }).eq('id', id));
 }
 
-export async function removeEnrollment(id: string) {
-  unwrap(await supabase.from('teller_enrollments').delete().eq('id', id));
-}
-
 /** First day of a month and of the next month, as YYYY-MM-DD. */
 export function monthRange(year: number, monthIndex: number) {
   const pad = (n: number) => String(n).padStart(2, '0');
