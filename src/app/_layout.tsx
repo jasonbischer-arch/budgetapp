@@ -40,6 +40,14 @@ function RootNavigator() {
               title: 'Transaction',
             }}
           />
+          <Stack.Screen
+            name="bill/[id]"
+            options={{ presentation: 'modal', headerShown: true, title: 'Bill' }}
+          />
+          <Stack.Screen
+            name="income/[id]"
+            options={{ presentation: 'modal', headerShown: true, title: 'Paycheck' }}
+          />
         </Stack.Protected>
       </Stack>
     </AppLock>

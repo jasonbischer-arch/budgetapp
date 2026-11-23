@@ -4,33 +4,53 @@ export const Colors = {
   light: {
     text: '#0F172A',
     textSecondary: '#64748B',
-    background: '#F8FAFC',
+    textMuted: '#94A3B8',
+    background: '#F1F5F4',
     card: '#FFFFFF',
-    border: '#E2E8F0',
+    cardAlt: '#F8FAFA',
+    border: '#E3E8E7',
     primary: '#0F766E',
     primaryText: '#FFFFFF',
+    primarySoft: '#E6F4F2',
+    // Highlight card at the top of the Overview.
+    hero: '#0B4F4A',
+    heroText: '#FFFFFF',
+    heroMuted: '#A7D3CE',
+    // One hue for magnitude bars (spending by category, leftovers).
+    bar: '#14857A',
+    track: '#E3E8E7',
     positive: '#15803D',
     negative: '#B91C1C',
     warning: '#B45309',
-    track: '#E2E8F0',
+    warningSoft: '#FEF3E2',
+    shadow: 'rgba(15, 23, 42, 0.06)',
   },
   dark: {
     text: '#F1F5F9',
-    textSecondary: '#94A3B8',
-    background: '#0B1120',
-    card: '#111827',
-    border: '#1F2937',
+    textSecondary: '#A3B1C2',
+    textMuted: '#6B7A8C',
+    background: '#0A1110',
+    card: '#121C1B',
+    cardAlt: '#172322',
+    border: '#22302E',
     primary: '#2DD4BF',
     primaryText: '#042F2E',
+    primarySoft: '#123330',
+    hero: '#0F3D39',
+    heroText: '#F0FDFA',
+    heroMuted: '#8CC7BF',
+    bar: '#2BB5A4',
+    track: '#22302E',
     positive: '#4ADE80',
     negative: '#F87171',
     warning: '#FBBF24',
-    track: '#1F2937',
+    warningSoft: '#3A2A10',
+    shadow: 'rgba(0, 0, 0, 0.3)',
   },
 } as const;
 
 export type Palette = { [K in keyof typeof Colors.light]: string };
 
 export const Spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
-export const Radius = { sm: 8, md: 12, lg: 16 } as const;
+export const Radius = { sm: 8, md: 12, lg: 18, pill: 999 } as const;
 export const MaxContentWidth = 760;

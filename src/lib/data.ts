@@ -24,13 +24,72 @@ export interface BankItem {
   last_synced_at: string | null;
 }
 
+export type CategoryKind = 'income' | 'expense' | 'transfer' | 'savings';
+
 export interface Category {
   id: string;
   name: string;
   color: string;
+  kind: CategoryKind;
   is_income: boolean;
   monthly_budget: number | null;
   sort_order: number;
+  provider_categories: string[];
+}
+
+export type Frequency = 'weekly' | 'biweekly' | 'semimonthly' | 'monthly';
+
+export interface IncomeSource {
+  id: string;
+  name: string;
+  amount: number;
+  frequency: Frequency;
+  anchor_date: string | null;
+  day1: number | null;
+  day2: number | null;
+}
+
+export type BillFrequency = 'monthly' | 'quarterly' | 'yearly';
+
+export interface Bill {
+  id: string;
+  name: string;
+  amount: number | null;
+  frequency: BillFrequency;
+  due_day: number;
+  due_month: number | null;
+  is_debt: boolean;
+  balance: number | null;
+  apr: number | null;
+  account_id: string | null;
+  category_id: string | null;
+}
+
+export interface Liability {
+  account_id: string;
+  apr: number | null;
+  minimum_payment: number | null;
+  next_due_date: string | null;
+  last_statement_balance: number | null;
+}
+
+export type Flow = 'income' | 'spending' | 'refund' | 'saved';
+
+export interface FlowRow {
+  month: string;
+  flow: Flow;
+  category_id: string | null;
+  total: number;
+  n: number;
+}
+
+export interface FlowTransaction {
+  id: string;
+  date: string;
+  amount: number;
+  flow: Flow | 'excluded' | 'ignored';
+  description: string;
+  merchant: string | null;
 }
 
 export interface Transaction {
@@ -91,9 +150,14 @@ function unwrap<T>({ data, error }: { data: T | null; error: { message: string }
 }
 
 export async function fetchAccounts(): Promise<Account[]> {
-  return unwrap(
+  const rows = unwrap(
     await supabase.from('accounts').select('*').order('institution_name').order('name'),
-  );
+  ) as Account[];
+  return rows.map((a) => ({
+    ...a,
+    balance_available: a.balance_available == null ? null : Number(a.balance_available),
+    balance_ledger: a.balance_ledger == null ? null : Number(a.balance_ledger),
+  }));
 }
 
 export async function fetchBankItems(): Promise<BankItem[]> {
@@ -106,7 +170,13 @@ export async function fetchBankItems(): Promise<BankItem[]> {
 }
 
 export async function fetchCategories(): Promise<Category[]> {
-  return unwrap(await supabase.from('categories').select('*').order('sort_order').order('name'));
+  const rows = unwrap(
+    await supabase.from('categories').select('*').order('sort_order').order('name'),
+  ) as Category[];
+  return rows.map((c) => ({
+    ...c,
+    monthly_budget: c.monthly_budget == null ? null : Number(c.monthly_budget),
+  }));
 }
 
 export async function fetchTransactions(opts: { from?: string; to?: string; limit?: number } = {}) {
@@ -146,32 +216,80 @@ export function monthRange(year: number, monthIndex: number) {
   };
 }
 
-/**
- * Spending per category for a set of transactions. Spending is money out
- * (negative amounts), reported as a positive number. Excluded transactions
- * (transfers, card payments) are ignored.
- */
-export function summarize(txns: Transaction[], categories: Category[]) {
-  const incomeIds = new Set(categories.filter((c) => c.is_income).map((c) => c.id));
-  const spentByCategory = new Map<string | null, number>();
-  let income = 0;
-  let spent = 0;
-  for (const t of txns) {
-    if (t.excluded) continue;
-    if (t.category_id && incomeIds.has(t.category_id)) {
-      income += t.amount;
-      continue;
-    }
-    if (t.amount < 0) {
-      spent += -t.amount;
-      spentByCategory.set(t.category_id, (spentByCategory.get(t.category_id) ?? 0) - t.amount);
-    } else if (!t.category_id) {
-      income += t.amount; // uncategorized deposits count as income
-    } else {
-      // refunds reduce spending in their category
-      spent -= t.amount;
-      spentByCategory.set(t.category_id, (spentByCategory.get(t.category_id) ?? 0) - t.amount);
-    }
-  }
-  return { income, spent, spentByCategory };
+
+// ---------------------------------------------------------------------------
+// Plan data: income sources, bills, debt details, money flows
+// ---------------------------------------------------------------------------
+
+const num = (v: unknown) => (v == null ? null : Number(v));
+
+export async function fetchIncomeSources(): Promise<IncomeSource[]> {
+  const rows = unwrap(await supabase.from('income_sources').select('*').order('created_at')) as IncomeSource[];
+  return rows.map((r) => ({ ...r, amount: Number(r.amount) }));
+}
+
+export async function saveIncomeSource(householdId: string, src: Omit<IncomeSource, 'id'> & { id?: string }) {
+  const { id, ...fields } = src;
+  if (id) unwrap(await supabase.from('income_sources').update(fields).eq('id', id));
+  else unwrap(await supabase.from('income_sources').insert({ ...fields, household_id: householdId }));
+}
+
+export async function deleteIncomeSource(id: string) {
+  unwrap(await supabase.from('income_sources').delete().eq('id', id));
+}
+
+export async function fetchBills(): Promise<Bill[]> {
+  const rows = unwrap(await supabase.from('bills').select('*').order('due_day')) as Bill[];
+  return rows.map((r) => ({ ...r, amount: num(r.amount), balance: num(r.balance), apr: num(r.apr) }));
+}
+
+export async function saveBill(householdId: string, bill: Omit<Bill, 'id'> & { id?: string }) {
+  const { id, ...fields } = bill;
+  if (id) unwrap(await supabase.from('bills').update(fields).eq('id', id));
+  else unwrap(await supabase.from('bills').insert({ ...fields, household_id: householdId }));
+}
+
+export async function deleteBill(id: string) {
+  unwrap(await supabase.from('bills').delete().eq('id', id));
+}
+
+export async function fetchLiabilities(): Promise<Liability[]> {
+  const rows = unwrap(await supabase.from('account_liabilities').select('*')) as Liability[];
+  return rows.map((r) => ({
+    ...r,
+    apr: num(r.apr),
+    minimum_payment: num(r.minimum_payment),
+    last_statement_balance: num(r.last_statement_balance),
+  }));
+}
+
+/** Monthly totals per flow and category since a date. */
+export async function fetchMonthlyFlows(from: string): Promise<FlowRow[]> {
+  const rows = unwrap(await supabase.rpc('monthly_flows', { p_from: from })) as FlowRow[];
+  return rows.map((r) => ({ ...r, total: Number(r.total), n: Number(r.n) }));
+}
+
+/** Money-in transactions since a date (for spotting paychecks). */
+export async function fetchIncomeTransactions(from: string): Promise<FlowTransaction[]> {
+  const rows = unwrap(
+    await supabase
+      .from('transaction_flows')
+      .select('id, date, amount, flow, description, merchant')
+      .eq('flow', 'income')
+      .gte('date', from)
+      .order('date'),
+  ) as FlowTransaction[];
+  return rows.map((r) => ({ ...r, amount: Number(r.amount) }));
+}
+
+/** The date of the household's oldest transaction, if any. */
+export async function fetchFirstTransactionDate(): Promise<string | null> {
+  const rows = unwrap(
+    await supabase.from('transactions').select('date').order('date').limit(1),
+  ) as { date: string }[];
+  return rows[0]?.date ?? null;
+}
+
+export async function setCategoryBudgets(budgets: { id: string; monthly_budget: number | null }[]) {
+  for (const b of budgets) await updateCategoryBudget(b.id, b.monthly_budget);
 }

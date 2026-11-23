@@ -37,10 +37,10 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
-        name="budgets"
+        name="plan"
         options={{
-          title: 'Budgets',
-          tabBarIcon: icon({ ios: 'target', android: 'savings', web: 'savings' }),
+          title: 'Plan',
+          tabBarIcon: icon({ ios: 'calendar', android: 'event', web: 'event' }),
         }}
       />
       <Tabs.Screen

@@ -73,8 +73,186 @@ export function T({
 export function Card({ children, style }: { children: ReactNode; style?: ViewStyle }) {
   const c = useTheme();
   return (
-    <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }, style]}>
+    <View
+      style={[
+        styles.card,
+        {
+          backgroundColor: c.card,
+          borderColor: c.border,
+          boxShadow: `0 1px 2px ${c.shadow}, 0 6px 16px ${c.shadow}`,
+        },
+        style,
+      ]}>
       {children}
+    </View>
+  );
+}
+
+/** Small uppercase label above a group of cards, with an optional action. */
+export function SectionHeader({
+  title,
+  action,
+  onAction,
+}: {
+  title: string;
+  action?: string;
+  onAction?: () => void;
+}) {
+  const c = useTheme();
+  return (
+    <Row style={{ justifyContent: 'space-between', marginTop: Spacing.sm, marginBottom: -Spacing.xs }}>
+      <Text style={{ color: c.textSecondary, fontSize: 12, fontWeight: '700', letterSpacing: 0.8 }}>
+        {title.toUpperCase()}
+      </Text>
+      {action && onAction && (
+        <Pressable onPress={onAction} hitSlop={10}>
+          <Text style={{ color: c.primary, fontSize: 14, fontWeight: '600' }}>{action}</Text>
+        </Pressable>
+      )}
+    </Row>
+  );
+}
+
+/** A row of mutually exclusive options (filters, sub-tabs). */
+export function Segmented<V extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: V; label: string }[];
+  value: V;
+  onChange: (v: V) => void;
+}) {
+  const c = useTheme();
+  return (
+    <View style={[styles.segmented, { backgroundColor: c.track }]} accessibilityRole="tablist">
+      {options.map((o) => {
+        const selected = o.value === value;
+        return (
+          <Pressable
+            key={o.value}
+            accessibilityRole="tab"
+            accessibilityState={{ selected }}
+            onPress={() => onChange(o.value)}
+            style={[
+              styles.segment,
+              selected && { backgroundColor: c.card, boxShadow: `0 1px 3px ${c.shadow}` },
+            ]}>
+            <Text
+              numberOfLines={1}
+              style={{
+                fontSize: 13,
+                fontWeight: selected ? '700' : '500',
+                color: selected ? c.text : c.textSecondary,
+              }}>
+              {o.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+/** A headline number with a label (KPI tile). */
+export function Stat({
+  label,
+  value,
+  sub,
+  color,
+  style,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  color?: string;
+  style?: ViewStyle;
+}) {
+  return (
+    <Card style={{ flex: 1, gap: 2, padding: Spacing.md, ...style }}>
+      <T variant="small">{label}</T>
+      <T
+        variant="money"
+        color={color}
+        style={{ fontSize: 20, fontWeight: '700' }}
+        numberOfLines={1}
+        adjustsFontSizeToFit>
+        {value}
+      </T>
+      {sub ? <T variant="small">{sub}</T> : null}
+    </Card>
+  );
+}
+
+/** A small rounded label. */
+export function Badge({ text, tone = 'neutral' }: { text: string; tone?: 'neutral' | 'primary' | 'warning' }) {
+  const c = useTheme();
+  const bg = tone === 'primary' ? c.primarySoft : tone === 'warning' ? c.warningSoft : c.track;
+  const fg = tone === 'primary' ? c.primary : tone === 'warning' ? c.warning : c.textSecondary;
+  return (
+    <View style={{ backgroundColor: bg, borderRadius: Radius.pill, paddingHorizontal: 8, paddingVertical: 2 }}>
+      <Text style={{ color: fg, fontSize: 11, fontWeight: '700' }}>{text}</Text>
+    </View>
+  );
+}
+
+/**
+ * One row of a ranked bar list: name, figure, and a bar scaled to `max`.
+ * An optional limit draws a tick and turns the figure red when exceeded.
+ */
+export function MeterRow({
+  label,
+  value,
+  max,
+  figure,
+  detail,
+  limit,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  figure: string;
+  detail?: string;
+  limit?: number | null;
+}) {
+  const c = useTheme();
+  const over = limit != null && limit > 0 && value > limit;
+  const scale = Math.max(max, limit ?? 0) || 1;
+  return (
+    <View style={{ gap: 6 }} accessible accessibilityLabel={`${label}: ${figure}${detail ? `, ${detail}` : ''}`}>
+      <Row style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <T numberOfLines={1} style={{ flexShrink: 1 }}>
+          {label}
+        </T>
+        <T variant="money" color={over ? c.negative : undefined}>
+          {figure}
+        </T>
+      </Row>
+      <View style={[styles.track, { backgroundColor: c.track }]}>
+        <View
+          style={{
+            width: `${Math.min(1, value / scale) * 100}%`,
+            height: '100%',
+            backgroundColor: over ? c.negative : c.bar,
+            borderRadius: 4,
+          }}
+        />
+        {limit != null && limit > 0 && (
+          <View
+            style={{
+              position: 'absolute',
+              left: `${Math.min(1, limit / scale) * 100}%`,
+              top: -2,
+              bottom: -2,
+              width: 2,
+              marginLeft: -1,
+              backgroundColor: c.text,
+              opacity: 0.55,
+            }}
+          />
+        )}
+      </View>
+      {detail ? <T variant="small">{detail}</T> : null}
     </View>
   );
 }
@@ -164,6 +342,15 @@ const styles = StyleSheet.create({
     padding: Spacing.lg,
     gap: Spacing.lg,
   },
+  segmented: { flexDirection: 'row', borderRadius: Radius.md, padding: 3, gap: 2 },
+  segment: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderRadius: Radius.sm + 2,
+  },
   card: {
     borderRadius: Radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
@@ -185,6 +372,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     fontSize: 16,
   },
-  track: { height: 8, borderRadius: 4, overflow: 'hidden' },
+  track: { height: 8, borderRadius: 4 },
   row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
 });

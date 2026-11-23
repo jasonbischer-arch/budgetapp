@@ -30,3 +30,17 @@ export function timeAgo(iso: string | null) {
   if (hrs < 24) return `${hrs} hr ago`;
   return `${Math.round(hrs / 24)} days ago`;
 }
+
+export function ordinal(n: number) {
+  const v = n % 100;
+  const suffix = v >= 11 && v <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th';
+  return `${n}${suffix}`;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+export const monthShort = (m: number) => MONTHS[(m - 1 + 12) % 12];
+
+export function weekday(iso: string) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', { weekday: 'short' });
+}

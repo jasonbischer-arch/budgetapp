@@ -1,5 +1,8 @@
-// Creates a short-lived Plaid Link token for the signed-in user. Pass
-// { itemId } to reconnect an existing bank (Link "update mode").
+// Creates a short-lived Plaid Link token for the signed-in user.
+//   {}                                 connect a new bank
+//   { itemId }                         reconnect a bank (Link "update mode")
+//   { itemId, addDebtDetails: true }   ask an existing bank for consent to
+//                                      share card/loan details (Liabilities)
 import {
   adminClient,
   getToken,
@@ -8,12 +11,25 @@ import {
   requireItem,
   serve,
 } from "../_shared/sync.ts";
-import { plaid } from "../_shared/plaid.ts";
+import { plaid, PlaidError } from "../_shared/plaid.ts";
+
+async function createLinkToken(request: Record<string, unknown>, optional: Record<string, unknown>) {
+  try {
+    return await plaid<{ link_token: string }>("/link/token/create", { ...request, ...optional });
+  } catch (e) {
+    // If Plaid rejects the optional debt-details fields, still let the user
+    // connect: debt details can be entered by hand.
+    if (e instanceof PlaidError && e.type === "INVALID_REQUEST" && Object.keys(optional).length) {
+      return await plaid<{ link_token: string }>("/link/token/create", request);
+    }
+    throw e;
+  }
+}
 
 serve(async (req) => {
   const admin = adminClient();
   const { user, householdId } = await requireHousehold(req, admin);
-  const body = (await req.json().catch(() => ({}))) as { itemId?: unknown };
+  const body = (await req.json().catch(() => ({}))) as { itemId?: unknown; addDebtDetails?: unknown };
 
   const base = {
     client_name: "Budget",
@@ -22,19 +38,20 @@ serve(async (req) => {
     user: { client_user_id: user.id },
   };
 
-  let request: Record<string, unknown>;
+  let result: { link_token: string };
   if (body.itemId !== undefined) {
     const item = await requireItem(admin, body.itemId, householdId);
     const token = await getToken(admin, item.id);
-    request = { ...base, access_token: token };
+    result = await createLinkToken(
+      { ...base, access_token: token },
+      body.addDebtDetails === true ? { additional_consented_products: ["liabilities"] } : {},
+    );
   } else {
-    request = {
-      ...base,
-      products: ["transactions"],
-      transactions: { days_requested: 730 },
-    };
+    result = await createLinkToken(
+      { ...base, products: ["transactions"], transactions: { days_requested: 730 } },
+      // Card APRs, minimum payments and due dates, when the bank supports it.
+      { optional_products: ["liabilities"] },
+    );
   }
-
-  const { link_token } = await plaid<{ link_token: string }>("/link/token/create", request);
-  return json(req, { linkToken: link_token });
+  return json(req, { linkToken: result.link_token });
 });

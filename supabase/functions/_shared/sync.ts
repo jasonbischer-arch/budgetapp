@@ -1,5 +1,6 @@
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
 import {
+  LiabilitiesResponse,
   plaid,
   PlaidAccount,
   PlaidError,
@@ -169,6 +170,51 @@ async function fetchChanges(token: string, startCursor: string | null) {
 }
 
 /**
+ * Saves APR, minimum payment and due date for cards and loans (Plaid
+ * Liabilities). Optional: if the bank or Plaid plan doesn't support it, the
+ * sync carries on and those details can be entered by hand.
+ */
+async function syncLiabilities(admin: SupabaseClient, token: string, householdId: string) {
+  let data: LiabilitiesResponse;
+  try {
+    data = await plaid<LiabilitiesResponse>("/liabilities/get", { access_token: token });
+  } catch (e) {
+    console.warn("liabilities unavailable:", e instanceof PlaidError ? e.code : e);
+    return;
+  }
+  const l = data.liabilities ?? {};
+  const now = new Date().toISOString();
+  const rows = [
+    ...(l.credit ?? []).map((c) => ({
+      account_id: c.account_id,
+      apr: (c.aprs?.find((a) => a.apr_type === "purchase_apr") ?? c.aprs?.[0])?.apr_percentage ?? null,
+      minimum_payment: c.minimum_payment_amount ?? null,
+      next_due_date: c.next_payment_due_date ?? null,
+      last_statement_balance: c.last_statement_balance ?? null,
+    })),
+    ...(l.student ?? []).map((s) => ({
+      account_id: s.account_id,
+      apr: s.interest_rate_percentage ?? null,
+      minimum_payment: s.minimum_payment_amount ?? null,
+      next_due_date: s.next_payment_due_date ?? null,
+      last_statement_balance: s.last_statement_balance ?? null,
+    })),
+    ...(l.mortgage ?? []).map((m) => ({
+      account_id: m.account_id,
+      apr: m.interest_rate?.percentage ?? null,
+      minimum_payment: m.next_monthly_payment ?? null,
+      next_due_date: m.next_payment_due_date ?? null,
+      last_statement_balance: null,
+    })),
+  ]
+    .filter((r): r is typeof r & { account_id: string } => !!r.account_id)
+    .map((r) => ({ ...r, household_id: householdId, updated_at: now }));
+  if (!rows.length) return;
+  const { error } = await admin.from("account_liabilities").upsert(rows, { onConflict: "account_id" });
+  if (error) console.error("saving liabilities failed:", error.message);
+}
+
+/**
  * Refreshes balances and pulls new/changed/removed transactions with Plaid's
  * /transactions/sync, resuming from the cursor saved on the item.
  */
@@ -211,6 +257,10 @@ export async function syncItem(
         { onConflict: "id" },
       );
       if (error) throw error;
+    }
+
+    if (accounts.some((a) => a.type === "credit" || a.type === "loan")) {
+      await syncLiabilities(admin, token, householdId);
     }
 
     const changes = await fetchChanges(token, item?.sync_cursor ?? null);

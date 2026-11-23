@@ -1,128 +1,256 @@
 import { router } from 'expo-router';
-import { View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { StyleSheet, View } from 'react-native';
 
-import { MonthPicker, useMonth } from '@/components/month-picker';
-import { Button, Card, Divider, ErrorText, ProgressBar, Row, Screen, T } from '@/components/ui';
-import { Spacing } from '@/constants/theme';
+import {
+  Button,
+  Card,
+  Divider,
+  ErrorText,
+  MeterRow,
+  Row,
+  Screen,
+  SectionHeader,
+  Segmented,
+  Stat,
+  T,
+} from '@/components/ui';
+import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
-import {
-  fetchAccounts,
-  fetchCategories,
-  fetchTransactions,
-  monthRange,
-  summarize,
-  useQuery,
-} from '@/lib/data';
-import { money, moneyWhole } from '@/lib/format';
+import { money, moneyWhole, shortDate } from '@/lib/format';
+import { balances, toBillSchedule, useHouseholdData } from '@/lib/household-data';
+import { periodMonths, spendingByCategory, totalsFor, trailingAverages } from '@/lib/insights';
+import { dueDates, endOfMonth, paydays, today } from '@/lib/schedule';
+
+type Period = '1' | '3' | '6' | '12';
+const PERIODS: { value: Period; label: string }[] = [
+  { value: '1', label: 'This month' },
+  { value: '3', label: '3 months' },
+  { value: '6', label: '6 months' },
+  { value: '12', label: '12 months' },
+];
+
+function greeting() {
+  const h = new Date().getHours();
+  return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+}
 
 export default function Overview() {
   const c = useTheme();
   const { household } = useAuth();
-  const month = useMonth();
-  const range = monthRange(month.year, month.index);
+  const { data, loading, error, reload } = useHouseholdData();
+  const [period, setPeriod] = useState<Period>('1');
 
-  const { data, loading, error, reload } = useQuery(
-    async () => {
-      const [accounts, categories, txns] = await Promise.all([
-        fetchAccounts(),
-        fetchCategories(),
-        fetchTransactions(range),
-      ]);
-      return { accounts, categories, txns };
-    },
-    { accounts: [], categories: [], txns: [] },
-    range.from,
-  );
+  const now = useMemo(() => new Date(), []);
+  const { cash, cards } = balances(data.accounts);
+  const avg = trailingAverages(data.flows, now, data.firstDate);
 
-  const visible = data.accounts.filter((a) => !a.hidden);
-  const cash = visible
-    .filter((a) => a.type === 'depository')
-    .reduce((s, a) => s + (a.balance_available ?? a.balance_ledger ?? 0), 0);
-  const owed = visible
-    .filter((a) => a.type === 'credit')
-    .reduce((s, a) => s + (a.balance_ledger ?? 0), 0);
+  // Rest of this month: paychecks still coming, bills still due.
+  const rest = useMemo(() => {
+    const from = today();
+    const to = endOfMonth(from);
+    const checks = data.incomes.flatMap((s) => paydays(s, from, to)).sort((a, b) => a.date.localeCompare(b.date));
+    const bills = data.bills
+      .map((b) => toBillSchedule(b, data.liabilities))
+      .flatMap((b) => dueDates(b, from, to))
+      .filter((b) => b.amount > 0)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const incoming = checks.reduce((s, x) => s + x.amount, 0);
+    const outgoing = bills.reduce((s, x) => s + x.amount, 0);
+    return { checks, bills, incoming, outgoing };
+  }, [data.incomes, data.bills, data.liabilities]);
 
-  const { income, spent, spentByCategory } = summarize(data.txns, data.categories);
-  const net = income - spent;
+  const months = periodMonths(now, Number(period));
+  const totals = totalsFor(data.flows, months);
+  const catById = new Map(data.categories.map((x) => [x.id, x]));
+  const byCategory = spendingByCategory(data.flows, months);
+  const maxCat = byCategory[0]?.amount ?? 0;
+  const perMonth = Number(period) > 1;
 
-  const budgeted = data.categories
-    .filter((cat) => !cat.is_income && (cat.monthly_budget || spentByCategory.get(cat.id)))
-    .map((cat) => ({ cat, spent: spentByCategory.get(cat.id) ?? 0 }))
-    .sort((a, b) => b.spent - a.spent);
-  const uncategorized = spentByCategory.get(null) ?? 0;
+  const monthName = now.toLocaleDateString('en-US', { month: 'long' });
+  const noAccounts = !loading && data.accounts.length === 0;
+  const noPlan = data.incomes.length === 0 && data.bills.length === 0;
 
   return (
     <Screen refreshing={loading} onRefresh={reload}>
-      <T variant="muted">{household?.name}</T>
+      <View style={{ gap: 2, marginTop: Spacing.sm }}>
+        <T variant="muted">{greeting()}</T>
+        <T variant="title">{household?.name ?? 'Overview'}</T>
+      </View>
+      <ErrorText message={error} />
 
-      {data.accounts.length === 0 && !loading ? (
+      {noAccounts ? (
         <Card>
           <T variant="heading">Connect your first bank</T>
-          <T variant="muted">Link your checking, savings and credit cards to start tracking.</T>
+          <T variant="muted">Link checking, savings and credit cards to start tracking.</T>
           <Button title="Connect a bank" onPress={() => router.push('/accounts')} />
         </Card>
       ) : (
-        <Row style={{ gap: Spacing.md }}>
-          <Stat label="Cash" value={moneyWhole(cash)} />
-          <Stat label="Card balances" value={moneyWhole(owed)} />
-        </Row>
+        <View style={[styles.hero, { backgroundColor: c.hero }]}>
+          <T color={c.heroMuted} style={styles.heroLabel}>
+            CASH IN CHECKING & SAVINGS
+          </T>
+          <T color={c.heroText} style={styles.heroValue} numberOfLines={1} adjustsFontSizeToFit>
+            {moneyWhole(cash)}
+          </T>
+          <View style={[styles.heroDivider, { backgroundColor: c.heroMuted }]} />
+          <Row style={{ justifyContent: 'space-between' }}>
+            <View>
+              <T color={c.heroMuted} style={styles.heroSmall}>
+                Card balances
+              </T>
+              <T color={c.heroText} style={styles.heroSub}>
+                {moneyWhole(cards)}
+              </T>
+            </View>
+            <View style={{ alignItems: 'flex-end' }}>
+              <T color={c.heroMuted} style={styles.heroSmall}>
+                After paying cards
+              </T>
+              <T color={c.heroText} style={styles.heroSub}>
+                {moneyWhole(cash - cards)}
+              </T>
+            </View>
+          </Row>
+        </View>
       )}
 
-      <MonthPicker month={month} />
-      <ErrorText message={error} />
-
-      <Row style={{ gap: Spacing.md }}>
-        <Stat label="Income" value={moneyWhole(income)} color={c.positive} />
-        <Stat label="Spent" value={moneyWhole(spent)} />
-        <Stat label="Net" value={moneyWhole(net)} color={net >= 0 ? c.positive : c.negative} />
+      {/* Trailing 12-month averages */}
+      <SectionHeader title="Monthly average" />
+      <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
+        <Stat label="Income" value={moneyWhole(avg.income)} color={c.positive} />
+        <Stat label="Expenses" value={moneyWhole(avg.spent)} />
+        <Stat label="Saved" value={moneyWhole(avg.saved)} />
       </Row>
+      <T variant="small" style={{ marginTop: -Spacing.sm }}>
+        {avg.months
+          ? avg.months >= 12
+            ? 'Based on the last 12 complete months.'
+            : `Based on ${avg.months} complete month${avg.months === 1 ? '' : 's'} of bank history so far.`
+          : 'Averages appear after your first complete month of history.'}
+      </T>
+
+      {/* Rest of this month */}
+      <SectionHeader title={`Rest of ${monthName}`} action={noPlan ? undefined : 'Plan'} onAction={() => router.push('/plan')} />
+      <Card>
+        {noPlan ? (
+          <>
+            <T variant="heading">See what&apos;s still coming</T>
+            <T variant="muted">
+              Add your paychecks and bills in Plan to see what&apos;s incoming and what&apos;s still due
+              this month.
+            </T>
+            <Button title="Set up paychecks & bills" kind="secondary" onPress={() => router.push('/plan')} />
+          </>
+        ) : (
+          <>
+            <Row style={{ gap: Spacing.md }}>
+              <View style={{ flex: 1 }}>
+                <T variant="small">Incoming</T>
+                <T variant="money" color={c.positive} style={{ fontSize: 20 }}>
+                  {moneyWhole(rest.incoming)}
+                </T>
+              </View>
+              <View style={{ flex: 1 }}>
+                <T variant="small">Bills left</T>
+                <T variant="money" style={{ fontSize: 20 }}>
+                  {moneyWhole(rest.outgoing)}
+                </T>
+              </View>
+              <View style={{ flex: 1, alignItems: 'flex-end' }}>
+                <T variant="small">Difference</T>
+                <T
+                  variant="money"
+                  color={rest.incoming - rest.outgoing >= 0 ? c.positive : c.negative}
+                  style={{ fontSize: 20 }}>
+                  {moneyWhole(rest.incoming - rest.outgoing)}
+                </T>
+              </View>
+            </Row>
+            <Divider />
+            {rest.checks.length === 0 && <T variant="muted">No more paychecks this month.</T>}
+            {rest.checks.map((x) => (
+              <Row key={x.id} style={{ justifyContent: 'space-between' }}>
+                <T>
+                  {x.name} <T variant="small">· {shortDate(x.date)}</T>
+                </T>
+                <T variant="money" color={c.positive}>
+                  +{money(x.amount)}
+                </T>
+              </Row>
+            ))}
+            {rest.bills.length === 0 && <T variant="muted">No more bills due this month.</T>}
+            {rest.bills.map((x) => (
+              <Row key={x.id} style={{ justifyContent: 'space-between' }}>
+                <T>
+                  {x.name} <T variant="small">· due {shortDate(x.date)}</T>
+                </T>
+                <T variant="money">−{money(x.amount)}</T>
+              </Row>
+            ))}
+          </>
+        )}
+      </Card>
+
+      {/* Period totals and spending */}
+      <SectionHeader title="Income & spending" />
+      <Segmented options={PERIODS} value={period} onChange={setPeriod} />
+      <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
+        <Stat label="Income" value={moneyWhole(totals.income)} color={c.positive} />
+        <Stat label="Spent" value={moneyWhole(totals.spent)} />
+        <Stat
+          label="Net"
+          value={moneyWhole(totals.net)}
+          color={totals.net >= 0 ? c.positive : c.negative}
+        />
+      </Row>
+      {totals.saved > 0 && (
+        <Card style={{ padding: Spacing.md, backgroundColor: c.primarySoft, borderColor: c.primarySoft }}>
+          <T>
+            <T style={{ fontWeight: '700' }} color={c.primary}>
+              {moneyWhole(totals.saved)}
+            </T>{' '}
+            moved to savings & investments. That&apos;s not counted as spending.
+          </T>
+        </Card>
+      )}
 
       <Card>
         <T variant="heading">Spending by category</T>
-        {budgeted.length === 0 && uncategorized === 0 && (
-          <T variant="muted">No spending yet this month.</T>
-        )}
-        {budgeted.map(({ cat, spent: s }, i) => {
-          const budget = cat.monthly_budget ?? 0;
-          const over = budget > 0 && s > budget;
+        {byCategory.length === 0 && <T variant="muted">No spending in this period.</T>}
+        {byCategory.map(({ categoryId, amount }) => {
+          const cat = categoryId ? catById.get(categoryId) : undefined;
+          const months = Number(period);
+          const share = totals.spent > 0 ? Math.round((amount / totals.spent) * 100) : 0;
           return (
-            <View key={cat.id} style={{ gap: 6 }}>
-              {i > 0 && <Divider />}
-              <Row style={{ justifyContent: 'space-between', marginTop: i > 0 ? 8 : 0 }}>
-                <Row style={{ gap: 8, flexShrink: 1 }}>
-                  <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: cat.color }} />
-                  <T numberOfLines={1}>{cat.name}</T>
-                </Row>
-                <T variant="money" color={over ? c.negative : undefined}>
-                  {money(s)}
-                  {budget > 0 && <T variant="small"> / {moneyWhole(budget)}</T>}
-                </T>
-              </Row>
-              {budget > 0 && (
-                <ProgressBar value={s / budget} color={over ? c.negative : cat.color} />
-              )}
-            </View>
+            <MeterRow
+              key={categoryId ?? 'none'}
+              label={cat?.name ?? 'Uncategorized'}
+              value={amount}
+              max={maxCat}
+              figure={money(amount)}
+              limit={!perMonth ? cat?.monthly_budget : null}
+              detail={
+                perMonth
+                  ? `${money(amount / months)} / month · ${share}% of spending`
+                  : cat?.monthly_budget
+                    ? `${share}% of spending · budget ${moneyWhole(cat.monthly_budget)}`
+                    : `${share}% of spending`
+              }
+            />
           );
         })}
-        {uncategorized > 0 && (
-          <Row style={{ justifyContent: 'space-between' }}>
-            <T variant="muted">Uncategorized</T>
-            <T variant="money">{money(uncategorized)}</T>
-          </Row>
-        )}
       </Card>
     </Screen>
   );
 }
 
-function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
-  return (
-    <Card style={{ flex: 1, gap: 4, padding: Spacing.md }}>
-      <T variant="small">{label}</T>
-      <T variant="money" color={color} style={{ fontSize: 18 }} numberOfLines={1} adjustsFontSizeToFit>
-        {value}
-      </T>
-    </Card>
-  );
-}
+const styles = StyleSheet.create({
+  hero: { borderRadius: Radius.lg + 4, padding: Spacing.xl, gap: Spacing.xs },
+  heroLabel: { fontSize: 12, fontWeight: '700', letterSpacing: 0.8 },
+  heroValue: { fontSize: 40, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  heroDivider: { height: StyleSheet.hairlineWidth, opacity: 0.4, marginVertical: Spacing.md },
+  heroSmall: { fontSize: 13 },
+  heroSub: { fontSize: 18, fontWeight: '700', fontVariant: ['tabular-nums'] },
+});

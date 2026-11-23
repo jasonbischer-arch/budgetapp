@@ -94,3 +94,28 @@ export interface TransactionsSyncResponse {
   next_cursor: string;
   has_more: boolean;
 }
+
+export interface LiabilitiesResponse {
+  liabilities: {
+    credit?: {
+      account_id: string | null;
+      aprs?: { apr_percentage: number; apr_type: string }[];
+      minimum_payment_amount?: number | null;
+      next_payment_due_date?: string | null;
+      last_statement_balance?: number | null;
+    }[] | null;
+    student?: {
+      account_id: string | null;
+      interest_rate_percentage?: number | null;
+      minimum_payment_amount?: number | null;
+      next_payment_due_date?: string | null;
+      last_statement_balance?: number | null;
+    }[] | null;
+    mortgage?: {
+      account_id: string | null;
+      interest_rate?: { percentage?: number | null } | null;
+      next_monthly_payment?: number | null;
+      next_payment_due_date?: string | null;
+    }[] | null;
+  };
+}
