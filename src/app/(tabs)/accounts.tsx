@@ -1,33 +1,34 @@
 import { useState } from 'react';
 import { Alert, Platform, Pressable, Share, Switch, View } from 'react-native';
 
-import TellerConnect from '@/components/teller-connect';
-import { TELLER_APP_ID, TellerEnrollment } from '@/components/teller-connect.shared';
+import PlaidLink from '@/components/plaid-link';
+import { PlaidLinkSuccess } from '@/components/plaid-link.shared';
 import { Button, Card, Divider, ErrorText, Row, Screen, T } from '@/components/ui';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
-import {
-  fetchAccounts,
-  fetchEnrollments,
-  setAccountHidden,
-  useQuery,
-} from '@/lib/data';
+import { fetchAccounts, fetchBankItems, setAccountHidden, useQuery } from '@/lib/data';
 import { money, timeAgo } from '@/lib/format';
 import { callFunction } from '@/lib/supabase';
+
+/** A Plaid Link session: a new bank, or reconnecting an existing one. */
+interface LinkSession {
+  linkToken: string;
+  itemId?: string;
+}
 
 export default function Accounts() {
   const c = useTheme();
   const { household, signOut } = useAuth();
-  const [connecting, setConnecting] = useState<{ enrollmentId?: string } | null>(null);
+  const [link, setLink] = useState<LinkSession | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const { data, loading, error, reload } = useQuery(
     async () => {
-      const [enrollments, accounts] = await Promise.all([fetchEnrollments(), fetchAccounts()]);
-      return { enrollments, accounts };
+      const [items, accounts] = await Promise.all([fetchBankItems(), fetchAccounts()]);
+      return { items, accounts };
     },
-    { enrollments: [], accounts: [] },
+    { items: [], accounts: [] },
   );
 
   async function run(label: string, fn: () => Promise<unknown>) {
@@ -43,18 +44,40 @@ export default function Accounts() {
     }
   }
 
-  function onEnrolled(enrollment: TellerEnrollment) {
-    setConnecting(null);
-    run('enroll', () =>
-      callFunction('teller-enroll', {
-        accessToken: enrollment.accessToken,
-        enrollment: enrollment.enrollment,
-      }),
-    );
+  /** Gets a Link token from the server, then opens Plaid Link. */
+  function startLink(itemId?: string) {
+    run(itemId ? `reconnect-${itemId}` : 'connect', async () => {
+      const { linkToken } = await callFunction<{ linkToken: string }>(
+        'plaid-link-token',
+        itemId ? { itemId } : {},
+      );
+      setLink({ linkToken, itemId });
+    });
   }
 
-  function confirmRemove(id: string, name: string) {
-    const go = () => run('remove', () => callFunction('teller-disconnect', { enrollmentId: id }));
+  function onLinked(result: PlaidLinkSuccess) {
+    const session = link;
+    setLink(null);
+    if (session?.itemId) {
+      // Reconnected an existing bank: its token is unchanged, just re-sync.
+      run('sync', () => callFunction('plaid-sync', { itemId: session.itemId }));
+    } else {
+      run('connect', () =>
+        callFunction('plaid-exchange', {
+          publicToken: result.publicToken,
+          institution: result.institution,
+        }),
+      );
+    }
+  }
+
+  function onLinkExit(message?: string) {
+    setLink(null);
+    if (message) setActionError(message);
+  }
+
+  function confirmRemove(itemId: string, name: string) {
+    const go = () => run('remove', () => callFunction('plaid-disconnect', { itemId }));
     const msg = `Remove ${name}? This revokes the app's access to the bank and deletes its transaction history from the app.`;
     if (Platform.OS === 'web') {
       if (window.confirm(msg)) go();
@@ -72,57 +95,50 @@ export default function Accounts() {
 
       <Row style={{ gap: 12 }}>
         <View style={{ flex: 1 }}>
-          <Button
-            title="Connect a bank"
-            onPress={() =>
-              TELLER_APP_ID
-                ? setConnecting({})
-                : setActionError('Teller app ID is missing. Add EXPO_PUBLIC_TELLER_APP_ID to .env and restart.')
-            }
-            loading={busy === 'enroll'}
-          />
+          <Button title="Connect a bank" onPress={() => startLink()} loading={busy === 'connect'} />
         </View>
         <View style={{ flex: 1 }}>
           <Button
             title="Sync now"
             kind="secondary"
-            onPress={() => run('sync', () => callFunction('teller-sync'))}
+            onPress={() => run('sync', () => callFunction('plaid-sync'))}
             loading={busy === 'sync'}
-            disabled={data.enrollments.length === 0}
+            disabled={data.items.length === 0}
           />
         </View>
       </Row>
       <ErrorText message={error ?? actionError} />
 
-      {data.enrollments.map((en) => {
-        const accounts = data.accounts.filter((a) => a.enrollment_id === en.id);
-        const name = en.institution_name ?? 'Bank';
+      {data.items.map((item) => {
+        const accounts = data.accounts.filter((a) => a.item_id === item.id);
+        const name = item.institution_name ?? 'Bank';
         return (
-          <Card key={en.id}>
+          <Card key={item.id}>
             <Row style={{ justifyContent: 'space-between' }}>
               <View style={{ flexShrink: 1 }}>
                 <T variant="heading">{name}</T>
                 <T variant="small">
-                  {en.status === 'active' ? `Synced ${timeAgo(en.last_synced_at)}` : null}
+                  {item.status === 'active' ? `Synced ${timeAgo(item.last_synced_at)}` : null}
                 </T>
               </View>
-              <Pressable onPress={() => confirmRemove(en.id, name)} hitSlop={8}>
-                <T variant="small" color={c.negative}>Remove</T>
+              <Pressable onPress={() => confirmRemove(item.id, name)} hitSlop={8}>
+                <T variant="small" color={c.negative}>
+                  Remove
+                </T>
               </Pressable>
             </Row>
 
-            {en.status !== 'active' && (
+            {item.status !== 'active' && (
               <View style={{ gap: 8 }}>
-                <T color={c.warning}>
-                  {en.status === 'disconnected'
-                    ? 'This bank needs you to sign in again.'
-                    : `Last sync failed: ${en.last_error ?? 'unknown error'}`}
-                </T>
-                <Button
-                  title="Reconnect"
-                  kind="secondary"
-                  onPress={() => setConnecting({ enrollmentId: en.id })}
-                />
+                <T color={c.warning}>{item.last_error ?? 'This bank needs attention.'}</T>
+                {item.status === 'disconnected' && (
+                  <Button
+                    title="Reconnect"
+                    kind="secondary"
+                    onPress={() => startLink(item.id)}
+                    loading={busy === `reconnect-${item.id}`}
+                  />
+                )}
               </View>
             )}
 
@@ -139,7 +155,11 @@ export default function Accounts() {
                   </View>
                   <Row style={{ gap: 12 }}>
                     <T variant="money">
-                      {money(a.type === 'credit' ? a.balance_ledger : (a.balance_available ?? a.balance_ledger))}
+                      {money(
+                        a.type === 'depository'
+                          ? (a.balance_available ?? a.balance_ledger)
+                          : a.balance_ledger,
+                      )}
                     </T>
                     <Switch
                       accessibilityLabel={`Include ${a.name}`}
@@ -177,13 +197,7 @@ export default function Accounts() {
 
       <Button title="Sign out" kind="secondary" onPress={signOut} />
 
-      {connecting && (
-        <TellerConnect
-          enrollmentId={connecting.enrollmentId}
-          onSuccess={onEnrolled}
-          onExit={() => setConnecting(null)}
-        />
-      )}
+      {link && <PlaidLink linkToken={link.linkToken} onSuccess={onLinked} onExit={onLinkExit} />}
     </Screen>
   );
 }

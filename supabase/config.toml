@@ -2,9 +2,16 @@
 # remaining defaults; keep the function settings below.
 project_id = "budgetapp"
 
-[functions.teller-enroll]
-verify_jwt = true
+# Every function checks the caller itself (user session, or the cron secret
+# for plaid-sync), so the gateway's JWT check is off.
+[functions.plaid-link-token]
+verify_jwt = false
 
-# Auth is checked inside the function: either a user JWT or the cron secret.
-[functions.teller-sync]
+[functions.plaid-exchange]
+verify_jwt = false
+
+[functions.plaid-sync]
+verify_jwt = false
+
+[functions.plaid-disconnect]
 verify_jwt = false

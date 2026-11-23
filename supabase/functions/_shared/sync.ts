@@ -1,11 +1,15 @@
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
 import {
-  TellerAccount,
-  TellerBalance,
-  TellerError,
-  tellerGet,
-  TellerTransaction,
-} from "./teller.ts";
+  plaid,
+  PlaidAccount,
+  PlaidError,
+  PlaidTransaction,
+  TransactionsSyncResponse,
+} from "./plaid.ts";
+
+// ---------------------------------------------------------------------------
+// HTTP helpers
+// ---------------------------------------------------------------------------
 
 // Browsers may only call these functions from the app's own website. The
 // iPhone app sends no Origin header, so CORS doesn't apply to it. Add your
@@ -39,6 +43,12 @@ export function json(req: Request, body: unknown, status = 200) {
   });
 }
 
+export class HttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
 /** Runs a handler with CORS preflight and safe error responses. */
 export function serve(handler: (req: Request) => Promise<Response>) {
   Deno.serve(async (req) => {
@@ -48,8 +58,8 @@ export function serve(handler: (req: Request) => Promise<Response>) {
       return await handler(req);
     } catch (e) {
       if (e instanceof HttpError) return json(req, { error: e.message }, e.status);
-      // Log the details for us; show users a generic message.
-      console.error(e);
+      // Log details for us; show users a generic message.
+      console.error(e instanceof PlaidError ? `PlaidError ${e.code}` : e);
       return json(req, { error: "Something went wrong. Please try again." }, 500);
     }
   });
@@ -64,6 +74,10 @@ export function safeEqual(a: string, b: string) {
   return diff === 0;
 }
 
+// ---------------------------------------------------------------------------
+// Supabase helpers
+// ---------------------------------------------------------------------------
+
 /** Service-role client: bypasses RLS. Only ever used server-side. */
 export function adminClient(): SupabaseClient {
   return createClient(
@@ -76,6 +90,7 @@ export function adminClient(): SupabaseClient {
 /** Resolves the signed-in user and their household from the request. */
 export async function requireHousehold(req: Request, admin: SupabaseClient) {
   const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+  if (!jwt) throw new HttpError(401, "Not signed in");
   const { data: { user }, error } = await admin.auth.getUser(jwt);
   if (error || !user) throw new HttpError(401, "Not signed in");
 
@@ -88,149 +103,176 @@ export async function requireHousehold(req: Request, admin: SupabaseClient) {
   return { user, householdId: member.household_id as string };
 }
 
-export class HttpError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
+/** Loads a bank item, making sure it belongs to the caller's household. */
+export async function requireItem(admin: SupabaseClient, itemId: unknown, householdId: string) {
+  if (typeof itemId !== "string" || itemId.length > 100) {
+    throw new HttpError(400, "Invalid bank connection");
   }
+  const { data: item } = await admin
+    .from("bank_items")
+    .select("id, household_id")
+    .eq("id", itemId)
+    .maybeSingle();
+  if (!item || item.household_id !== householdId) {
+    throw new HttpError(404, "Bank connection not found");
+  }
+  return item as { id: string; household_id: string };
 }
 
-// Teller returns transactions newest first. The first sync pulls a long
-// history; later syncs re-read the most recent batch, which catches new
-// transactions, pending -> posted changes and late corrections.
-const INITIAL_HISTORY_COUNT = 1000;
-const INCREMENTAL_COUNT = 250;
+/** Decrypts an item's Plaid access token from Vault (service role only). */
+export async function getToken(admin: SupabaseClient, itemId: string) {
+  const { data, error } = await admin.rpc("get_item_token", { p_item_id: itemId });
+  if (error) throw error;
+  return (data as string | null) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Sync
+// ---------------------------------------------------------------------------
 
 export interface SyncResult {
-  enrollmentId: string;
-  accounts: number;
-  transactions: number;
+  itemId: string;
   status: "active" | "disconnected" | "error";
-  error?: string;
+  added: number;
 }
 
-export async function syncEnrollment(
+/** Pages through /transactions/sync from a cursor; restarts if data shifts. */
+async function fetchChanges(token: string, startCursor: string | null) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      let cursor = startCursor;
+      const added: PlaidTransaction[] = [];
+      const modified: PlaidTransaction[] = [];
+      const removed: string[] = [];
+      let hasMore = true;
+      while (hasMore) {
+        const page = await plaid<TransactionsSyncResponse>("/transactions/sync", {
+          access_token: token,
+          ...(cursor ? { cursor } : {}),
+          count: 500,
+        });
+        added.push(...page.added);
+        modified.push(...page.modified);
+        removed.push(...page.removed.map((r) => r.transaction_id));
+        cursor = page.next_cursor;
+        hasMore = page.has_more;
+      }
+      return { added, modified, removed, cursor };
+    } catch (e) {
+      if (e instanceof PlaidError && e.code === "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION") {
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error("Transactions kept changing during sync");
+}
+
+/**
+ * Refreshes balances and pulls new/changed/removed transactions with Plaid's
+ * /transactions/sync, resuming from the cursor saved on the item.
+ */
+export async function syncItem(
   admin: SupabaseClient,
-  enrollmentId: string,
+  itemId: string,
   householdId: string,
 ): Promise<SyncResult> {
-  const token = await getToken(admin, enrollmentId);
-  if (!token) {
-    return { enrollmentId, accounts: 0, transactions: 0, status: "error", error: "Missing token" };
-  }
-
-  const { data: enrollment } = await admin
-    .from("teller_enrollments")
-    .select("last_synced_at")
-    .eq("id", enrollmentId)
-    .single();
-  const firstSync = !enrollment?.last_synced_at;
+  const token = await getToken(admin, itemId);
+  if (!token) return { itemId, status: "error", added: 0 };
 
   try {
-    const accounts = await tellerGet<TellerAccount[]>("/accounts", token);
-    let txnCount = 0;
+    const { data: item } = await admin
+      .from("bank_items")
+      .select("institution_name, sync_cursor")
+      .eq("id", itemId)
+      .single();
 
-    for (const acct of accounts) {
-      let balance: TellerBalance | null = null;
-      if (acct.status === "open") {
-        balance = await tellerGet<TellerBalance>(`/accounts/${acct.id}/balances`, token)
-          .catch(() => null);
-      }
-
-      const { error: acctErr } = await admin.from("accounts").upsert({
-        id: acct.id,
-        household_id: householdId,
-        enrollment_id: enrollmentId,
-        name: acct.name,
-        institution_name: acct.institution?.name ?? null,
-        type: acct.type,
-        subtype: acct.subtype,
-        last_four: acct.last_four,
-        currency: acct.currency,
-        status: acct.status,
-        balance_available: balance?.available != null ? Number(balance.available) : null,
-        balance_ledger: balance?.ledger != null ? Number(balance.ledger) : null,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "id", ignoreDuplicates: false });
-      if (acctErr) throw acctErr;
-
-      if (acct.status !== "open") continue;
-
-      const count = firstSync ? INITIAL_HISTORY_COUNT : INCREMENTAL_COUNT;
-      const txns = await tellerGet<TellerTransaction[]>(
-        `/accounts/${acct.id}/transactions?count=${count}`,
-        token,
+    // Balances: /accounts/get returns Plaid's cached balances (no extra fee).
+    const { accounts } = await plaid<{ accounts: PlaidAccount[] }>("/accounts/get", {
+      access_token: token,
+    });
+    if (accounts.length) {
+      const { error } = await admin.from("accounts").upsert(
+        accounts.map((a) => ({
+          id: a.account_id,
+          household_id: householdId,
+          item_id: itemId,
+          name: a.name,
+          institution_name: item?.institution_name ?? null,
+          type: a.type,
+          subtype: a.subtype,
+          last_four: a.mask,
+          currency: a.balances.iso_currency_code ?? "USD",
+          status: "open",
+          balance_available: a.balances.available,
+          balance_ledger: a.balances.current,
+          updated_at: new Date().toISOString(),
+        })),
+        { onConflict: "id" },
       );
-
-      // Upsert only Teller-owned columns, so category/notes you set are kept.
-      const rows = txns.map((t) => ({
-        id: t.id,
-        household_id: householdId,
-        account_id: acct.id,
-        date: t.date,
-        description: t.description,
-        merchant: t.details?.counterparty?.name ?? null,
-        amount: Number(t.amount),
-        status: t.status,
-        teller_category: t.details?.category ?? null,
-        updated_at: new Date().toISOString(),
-      }));
-      for (let i = 0; i < rows.length; i += 500) {
-        const { error } = await admin.from("transactions").upsert(rows.slice(i, i + 500), {
-          onConflict: "id",
-        });
-        if (error) throw error;
-      }
-      txnCount += rows.length;
-
-      // A pending transaction often gets a new id once it posts. Drop pending
-      // rows within the re-read date range that Teller no longer returns.
-      if (!firstSync && rows.length) {
-        const oldest = rows.reduce((min, r) => (r.date < min ? r.date : min), rows[0].date);
-        const seen = new Set(rows.map((r) => r.id));
-        const { data: pending } = await admin
-          .from("transactions")
-          .select("id")
-          .eq("account_id", acct.id)
-          .eq("status", "pending")
-          .gte("date", oldest);
-        const stale = (pending ?? []).map((p) => p.id).filter((id) => !seen.has(id));
-        if (stale.length) await admin.from("transactions").delete().in("id", stale);
-      }
+      if (error) throw error;
     }
 
-    await admin.from("teller_enrollments").update({
+    const changes = await fetchChanges(token, item?.sync_cursor ?? null);
+
+    // Only keep transactions for accounts the user shared with the app.
+    const known = new Set(accounts.map((a) => a.account_id));
+    const now = new Date().toISOString();
+    const rows = [...changes.added, ...changes.modified]
+      .filter((t) => known.has(t.account_id))
+      .map((t) => ({
+        id: t.transaction_id,
+        household_id: householdId,
+        account_id: t.account_id,
+        date: t.date,
+        description: t.name,
+        merchant: t.merchant_name ?? null,
+        // Plaid: positive = money out. This app: negative = money out.
+        amount: -t.amount,
+        status: t.pending ? "pending" : "posted",
+        category_primary: t.personal_finance_category?.primary ?? null,
+        category_detailed: t.personal_finance_category?.detailed ?? null,
+        updated_at: now,
+      }));
+    // Upsert only Plaid-owned columns, so categories/notes you set are kept.
+    for (let i = 0; i < rows.length; i += 500) {
+      const { error } = await admin.from("transactions").upsert(rows.slice(i, i + 500), {
+        onConflict: "id",
+      });
+      if (error) throw error;
+    }
+    for (let i = 0; i < changes.removed.length; i += 500) {
+      const { error } = await admin
+        .from("transactions")
+        .delete()
+        .eq("household_id", householdId)
+        .in("id", changes.removed.slice(i, i + 500));
+      if (error) throw error;
+    }
+
+    await admin.from("bank_items").update({
       status: "active",
       last_error: null,
-      last_synced_at: new Date().toISOString(),
-    }).eq("id", enrollmentId);
+      sync_cursor: changes.cursor,
+      last_synced_at: now,
+    }).eq("id", itemId);
 
-    return { enrollmentId, accounts: accounts.length, transactions: txnCount, status: "active" };
+    return { itemId, status: "active", added: changes.added.length };
   } catch (e) {
-    const disconnected = e instanceof TellerError && e.needsReconnect;
-    console.error(`sync ${enrollmentId} failed`, e);
+    const disconnected = e instanceof PlaidError && e.needsReconnect;
+    console.error(`sync ${itemId} failed:`, e instanceof PlaidError ? e.code : e);
     // Store a user-facing message only; details stay in the function logs.
     const message = disconnected
       ? "The bank needs you to sign in again."
-      : e instanceof TellerError
+      : e instanceof PlaidError && e.code === "PRODUCT_NOT_READY"
+      ? "The bank is still preparing your transactions. Try again in a few minutes."
+      : e instanceof PlaidError
       ? "The bank connection is temporarily unavailable."
       : "Sync failed. We'll retry on the next sync.";
-    await admin.from("teller_enrollments").update({
+    await admin.from("bank_items").update({
       status: disconnected ? "disconnected" : "error",
       last_error: message,
-    }).eq("id", enrollmentId);
-    return {
-      enrollmentId,
-      accounts: 0,
-      transactions: 0,
-      status: disconnected ? "disconnected" : "error",
-      error: message,
-    };
+    }).eq("id", itemId);
+    return { itemId, status: disconnected ? "disconnected" : "error", added: 0 };
   }
-}
-
-/** Decrypts an enrollment's Teller token from Vault (service role only). */
-export async function getToken(admin: SupabaseClient, enrollmentId: string) {
-  const { data, error } = await admin.rpc("get_teller_token", { p_enrollment_id: enrollmentId });
-  if (error) throw error;
-  return (data as string | null) ?? null;
 }

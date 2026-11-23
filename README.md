@@ -1,13 +1,14 @@
 # Budget
 
 A private budgeting app for our household. It runs as a website and as an
-iPhone app from one codebase, and it pulls balances and transactions from our
-banks automatically through [Teller](https://teller.io).
+iPhone app from one codebase, and pulls balances and transactions from our
+banks automatically through [Plaid](https://plaid.com).
 
 - **Overview:** cash on hand, credit card balances, and this month's income,
   spending and net, plus spending by category against each budget.
 - **Transactions:** searchable by month. Tap one to change its category, add
-  a note, or exclude it from the budget (transfers, card payments).
+  a note, or exclude it from the budget. Transfers between your own accounts
+  and credit card payments are excluded automatically.
 - **Budgets:** a monthly limit per category, with progress bars.
 - **Accounts:** connect banks, sync now, reconnect a bank that needs you to
   sign in again, hide accounts, and share the household invite code.
@@ -18,126 +19,111 @@ banks automatically through [Teller](https://teller.io).
 iPhone app / website (Expo + React Native)
    │  sign in, read and edit data (Row Level Security)
    ▼
-Supabase: Postgres + Auth + Edge Functions
-   │  teller-enroll: saves the bank token, first sync
-   │  teller-sync:   refreshes balances and transactions (button + daily job)
+Supabase: Postgres + Auth + Edge Functions + Vault
+   │  plaid-link-token  short-lived token to open Plaid Link
+   │  plaid-exchange    trades Link's one-time token for an access token
+   │  plaid-sync        balances + transactions (button, and daily at 11:17 UTC)
+   │  plaid-disconnect  revokes access at Plaid, then deletes the bank's data
    ▼
-Teller API (mTLS) ──► your banks
+Plaid API ──► your banks
 ```
 
-- Bank logins happen inside **Teller Connect**. The app never sees bank
+### Security model
+- Bank sign-in happens inside **Plaid Link**. The app never sees bank
   usernames or passwords.
-- Teller returns an **access token** per bank login. It is stored only in the
-  `teller_tokens` table, which the app can't read. Only the Edge Functions
-  (service role) can use it.
-- Each person has their own login. Both belong to one **household**, and every
-  row is scoped to it by Row Level Security.
+- Plaid **access tokens** are encrypted in **Supabase Vault**. Only the Edge
+  Functions can decrypt them. The app and signed-in users can't, and that's
+  tested.
+- Every row belongs to one **household**. Row Level Security limits reads to
+  its members, and members can only edit their own fields (category, notes,
+  budgets, hidden accounts). They can never edit amounts, balances, the invite
+  code or bank connections.
+- **Removing a bank revokes access at Plaid first**, then deletes its data and
+  wipes the token.
+- The daily sync authenticates with a random secret that's generated in the
+  database and kept in Vault.
+- Manual syncs are limited to once a minute. Functions only accept browser
+  requests from the app's own website, and errors shown to users never include
+  internal details.
+- **iPhone:** the login session is stored in the Keychain. The app locks with
+  Face ID or your passcode after a minute in the background.
+- Passwords must be at least 10 characters.
 
 | Path | What's there |
 |---|---|
 | `src/app/` | Screens (Expo Router). `(tabs)/` holds the four main tabs. |
-| `src/components/teller-connect*.tsx` | Teller Connect: script on web, WebView on iPhone |
-| `src/lib/` | Supabase client, auth/household context, data helpers |
-| `supabase/migrations/` | Database schema, security rules, default categories |
-| `supabase/functions/` | `teller-enroll` and `teller-sync` Edge Functions |
+| `src/components/plaid-link*.tsx` | Plaid Link: Plaid's script on web, Plaid's SDK on iPhone |
+| `src/lib/` | Supabase client, Keychain storage, auth/household context, data helpers |
+| `supabase/migrations/` | Database schema, security rules, default categories, daily schedule |
+| `supabase/functions/` | The four Plaid Edge Functions |
 
-## Setup
+## Setup status
 
-You need: a free [Supabase](https://supabase.com) account, a
-[Teller](https://teller.io) developer account, and Node 20+.
+The Supabase project (`fdlwfkgnsooulmrfyobv`) is already set up: database,
+security rules, functions and the daily sync. `.env` holds its public URL and
+publishable key. What's left:
 
-### 1. Supabase
+### 1. Add your Plaid keys to Supabase (one time)
 
-1. Create a project at supabase.com.
-2. Create the database: open **SQL Editor**, paste in
-   `supabase/migrations/20261123000000_init.sql` and run it. (Or use the CLI:
-   `npx supabase link --project-ref <ref>` then `npx supabase db push`.)
-3. **Authentication → Providers → Email**: keep it on. For a two-person app
-   you can turn off "Confirm email" to skip the confirmation email.
-4. **Project Settings → API**: copy the Project URL and the `anon` public key.
+1. In the Plaid dashboard (dashboard.plaid.com), open **Developers → Keys**.
+   Copy your **client_id** and your **Sandbox** secret.
+2. In Supabase (supabase.com/dashboard), open the **budgetapp** project →
+   **Edge Functions → Secrets** and add:
 
-### 2. Teller
+| Name | Value |
+|---|---|
+| `PLAID_CLIENT_ID` | your client_id |
+| `PLAID_SECRET` | your Sandbox secret |
+| `PLAID_ENV` | `sandbox` |
 
-1. Sign up at teller.io and create an application. Copy the **Application ID**.
-2. Download the **certificate** (`certificate.pem` and `private_key.pem`).
-   The sandbox works without it. Real banks require it.
-3. Environments:
-   - `sandbox`: fake banks. In Teller Connect, sign in with username
-     `username` and password `password`.
-   - `development`: your real banks, with a small free allowance of
-     connections. Check Teller's current limits.
-   - `production`: real banks, with Teller's paid plan.
+Never put the Plaid secret in the app or in git.
 
-### 3. Edge Functions
+### 2. Run it
 
 ```bash
-npx supabase login
-npx supabase link --project-ref <your-project-ref>
-npx supabase secrets set \
-  TELLER_CERT="$(cat certificate.pem)" \
-  TELLER_KEY="$(cat private_key.pem)" \
-  CRON_SECRET="$(openssl rand -hex 24)"
-npx supabase functions deploy teller-enroll teller-sync
-```
-
-Keep `certificate.pem`, `private_key.pem` and the cron secret out of git.
-`.gitignore` already ignores `*.pem`.
-
-### 4. Daily automatic sync
-
-In the SQL Editor, turn on the `pg_cron` and `pg_net` extensions
-(**Database → Extensions**) and run this. Replace the project ref and use the
-same `CRON_SECRET` you set above:
-
-```sql
-select cron.schedule(
-  'teller-daily-sync',
-  '17 11 * * *',  -- every day at 11:17 UTC
-  $$
-  select net.http_post(
-    url := 'https://<your-project-ref>.supabase.co/functions/v1/teller-sync',
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'x-cron-secret', '<your CRON_SECRET>'
-    ),
-    body := '{}'::jsonb
-  );
-  $$
-);
-```
-
-The **Sync now** button on the Accounts tab refreshes on demand.
-
-### 5. Run the app
-
-```bash
-cp .env.example .env.local   # fill in Supabase URL/key and Teller app id
 npm install
-npm run web                  # website at http://localhost:8081
-npx expo start               # scan the QR code with Expo Go on iPhone
+npm run web        # http://localhost:8081
 ```
 
-First run: create an account, create the household, and connect a bank from
-the **Accounts** tab. Your partner then creates their own account and joins
-with the invite code shown on that tab.
+Create an account, create your household, then go to **Accounts → Connect a
+bank**. In sandbox, pick any bank and sign in with username `user_good` and
+password `pass_good`.
 
-## Getting it on your iPhones
+### 3. Real banks (when sandbox works)
 
-- **While building:** install **Expo Go** from the App Store and scan the QR
-  code from `npx expo start`.
-- **As a real app:** an Apple Developer account ($99/year) lets you run
-  `npx eas-cli@latest build --platform ios` and install through **TestFlight**,
-  which is private to the people you invite.
-- **Website:** `npx expo export --platform web` produces a static site in
-  `dist/` for Netlify, Vercel or Cloudflare Pages. On iPhone, Safari's
-  **Share → Add to Home Screen** works too.
+1. In the Plaid dashboard, request **Production** access for the
+   **Transactions** product. Some big banks (Chase, Wells Fargo and others)
+   also need Plaid's OAuth registration, which the dashboard walks you through.
+2. In Supabase secrets, set `PLAID_SECRET` to your **Production** secret and
+   `PLAID_ENV` to `production`.
+3. Banks connected in sandbox don't carry over. Remove them and connect the
+   real ones.
 
-## To check before relying on it
+### 4. Publishing the website
 
-- **Amount signs:** the app assumes Teller reports money out as a negative
-  amount on every account type. Connect a sandbox credit card and confirm
-  purchases show as spending. If they don't, flip the sign for `credit`
-  accounts in `supabase/functions/_shared/sync.ts`.
-- **Credit card payments and transfers** show up twice (out of checking,
-  into the card). Mark them **Exclude from budget** so they aren't counted as
-  spending.
+`npx expo export --platform web` builds a static site in `dist/` for Netlify,
+Vercel or Cloudflare Pages. Then add its address (for example
+`https://budget.example.com`) to an `ALLOWED_ORIGINS` secret in Supabase, so
+the functions accept requests from it.
+
+## iPhone
+
+- **Expo Go** (`npx expo start`, then scan the QR code) runs the app for
+  viewing and editing. It can't open Plaid's native bank sign-in, so connect
+  banks from the website. They show up on the phone right away.
+- **The full app** with in-app bank connection and Face ID needs a build:
+  `npx eas-cli@latest build --profile development --platform ios`. That needs
+  an Apple Developer account ($99/year). TestFlight is the private way to
+  install it on both phones.
+- Or open the website in Safari and use **Share → Add to Home Screen**.
+
+## Maintenance notes
+
+- `supabase/migrations/` file names match what's applied to the live
+  project. Add new changes as new migration files.
+- The old, empty Teller token table was moved to a private `legacy` schema.
+  Remove it in the SQL Editor with `drop schema legacy cascade;` once you're
+  sure.
+- Supabase's advisor flags `pg_net` living in the `public` schema. It's
+  harmless here (its functions live in the `net` schema). Moving it means
+  reinstalling the extension.

@@ -13,10 +13,10 @@ export interface Account {
   balance_available: number | null;
   balance_ledger: number | null;
   hidden: boolean;
-  enrollment_id: string;
+  item_id: string;
 }
 
-export interface Enrollment {
+export interface BankItem {
   id: string;
   institution_name: string | null;
   status: 'active' | 'disconnected' | 'error';
@@ -96,8 +96,13 @@ export async function fetchAccounts(): Promise<Account[]> {
   );
 }
 
-export async function fetchEnrollments(): Promise<Enrollment[]> {
-  return unwrap(await supabase.from('teller_enrollments').select('*').order('created_at'));
+export async function fetchBankItems(): Promise<BankItem[]> {
+  return unwrap(
+    await supabase
+      .from('bank_items')
+      .select('id, institution_name, status, last_error, last_synced_at')
+      .order('created_at'),
+  );
 }
 
 export async function fetchCategories(): Promise<Category[]> {
