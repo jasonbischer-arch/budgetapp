@@ -329,3 +329,73 @@ export async function fetchFirstTransactionDate(): Promise<string | null> {
 export async function setCategoryBudgets(budgets: { id: string; monthly_budget: number | null }[]) {
   for (const b of budgets) await updateCategoryBudget(b.id, b.monthly_budget);
 }
+
+// ---------------------------------------------------------------------------
+// Net worth
+// ---------------------------------------------------------------------------
+
+export type AssetKind = 'home' | 'vehicle' | 'investment' | 'cash' | 'other';
+
+export interface ManualAsset {
+  id: string;
+  name: string;
+  kind: AssetKind;
+  value: number;
+  value_date: string;
+  annual_change_pct: number;
+  loan_account_id: string | null;
+  loan_bill_id: string | null;
+}
+
+export type ManualAssetInput = Omit<ManualAsset, 'id'>;
+
+export interface NetWorthItem {
+  section: 'asset' | 'liability';
+  kind: string;
+  name: string;
+  amount: number;
+  source: 'bank' | 'manual';
+  ref_id: string;
+  loan_ref: string | null;
+}
+
+export interface NetWorthPoint {
+  month: string;
+  assets: number;
+  liabilities: number;
+  net_worth: number;
+}
+
+export async function fetchNetWorthItems(): Promise<NetWorthItem[]> {
+  const rows = unwrap(await supabase.rpc('net_worth_items')) as NetWorthItem[];
+  return rows.map((r) => ({ ...r, amount: Number(r.amount) }));
+}
+
+/** Saves this month's snapshot, then returns the history (oldest first). */
+export async function fetchNetWorthHistory(): Promise<NetWorthPoint[]> {
+  await supabase.rpc('record_net_worth');
+  const rows = unwrap(
+    await supabase.from('net_worth_history').select('month, assets, liabilities, net_worth').order('month'),
+  ) as NetWorthPoint[];
+  return rows.map((r) => ({
+    month: r.month,
+    assets: Number(r.assets),
+    liabilities: Number(r.liabilities),
+    net_worth: Number(r.net_worth),
+  }));
+}
+
+export async function fetchManualAssets(): Promise<ManualAsset[]> {
+  const rows = unwrap(await supabase.from('manual_assets').select('*').order('created_at')) as ManualAsset[];
+  return rows.map((r) => ({ ...r, value: Number(r.value), annual_change_pct: Number(r.annual_change_pct) }));
+}
+
+export async function saveManualAsset(householdId: string, asset: ManualAssetInput & { id?: string }) {
+  const { id, ...fields } = asset;
+  if (id) unwrap(await supabase.from('manual_assets').update(fields).eq('id', id));
+  else unwrap(await supabase.from('manual_assets').insert({ ...fields, household_id: householdId }));
+}
+
+export async function deleteManualAsset(id: string) {
+  unwrap(await supabase.from('manual_assets').delete().eq('id', id));
+}

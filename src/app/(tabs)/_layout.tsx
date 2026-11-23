@@ -44,6 +44,13 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="networth"
+        options={{
+          title: 'Net worth',
+          tabBarIcon: icon({ ios: 'chart.line.uptrend.xyaxis', android: 'trending_up', web: 'trending_up' }),
+        }}
+      />
+      <Tabs.Screen
         name="accounts"
         options={{
           title: 'Accounts',
