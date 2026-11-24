@@ -136,6 +136,66 @@ export function expenseSplit(
   return { fixed, variable, fromBills: billsPerMonth > 0 };
 }
 
+export interface BillLike {
+  id: string;
+  name: string;
+  /** Monthly amount. */
+  monthly: number;
+  category_id: string | null;
+  expense_type: 'fixed' | 'variable';
+}
+
+export interface ExpenseItem {
+  kind: 'bill' | 'category';
+  id: string | null; // category id may be null (uncategorized)
+  name: string;
+  monthly: number;
+}
+
+/**
+ * Fixed and variable expenses, item by item, with no double counting:
+ * each bill counts at its monthly amount on its side, and each spending
+ * category counts what's left of its 12-month average after the bills paid
+ * from it (e.g. Utilities $300 with a $150 electric bill adds $150 more).
+ *
+ * Pass only bills that are real spending: payments to a credit card are
+ * left out by the caller, since the card's purchases are already counted.
+ */
+export function expenseBreakdown(
+  rows: FlowRowLike[],
+  categories: CategoryLike[],
+  months: Set<string>,
+  bills: BillLike[],
+) {
+  const avg = categoryAverages(rows, months);
+  const billsByCat = new Map<string | null, number>();
+  for (const b of bills) {
+    if (b.category_id) billsByCat.set(b.category_id, (billsByCat.get(b.category_id) ?? 0) + b.monthly);
+  }
+  const side = { fixed: [] as ExpenseItem[], variable: [] as ExpenseItem[] };
+  for (const b of bills) {
+    if (b.monthly > 0) side[b.expense_type].push({ kind: 'bill', id: b.id, name: b.name, monthly: b.monthly });
+  }
+  for (const [id, amount] of avg) {
+    const rest = amount - (id ? (billsByCat.get(id) ?? 0) : 0);
+    if (rest < 1) continue;
+    const cat = id ? categories.find((c) => c.id === id) : undefined;
+    side[cat?.expense_type === 'fixed' ? 'fixed' : 'variable'].push({
+      kind: 'category',
+      id,
+      name: cat?.name ?? 'Uncategorized',
+      monthly: rest,
+    });
+  }
+  const sum = (xs: ExpenseItem[]) => xs.reduce((s, x) => s + x.monthly, 0);
+  side.fixed.sort((a, b) => b.monthly - a.monthly);
+  side.variable.sort((a, b) => b.monthly - a.monthly);
+  return {
+    fixed: { total: sum(side.fixed), items: side.fixed },
+    variable: { total: sum(side.variable), items: side.variable },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Where to cut
 // ---------------------------------------------------------------------------

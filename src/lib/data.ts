@@ -92,6 +92,8 @@ export interface Bill {
   /** Manual debts: the date `balance` was right (it pays down from there). */
   balance_date: string | null;
   debt_kind: 'auto_loan' | 'mortgage' | 'student_loan' | 'personal_loan' | 'other' | null;
+  /** Counted with fixed or variable expenses on the Overview. */
+  expense_type: 'fixed' | 'variable';
 }
 
 /** The fields you edit on a bill. */
@@ -316,6 +318,97 @@ export async function saveBill(householdId: string, bill: BillInput & { id?: str
 export async function deleteBill(bill: Pick<Bill, 'id' | 'detection_key'>) {
   if (bill.detection_key) unwrap(await supabase.from('bills').update({ dismissed: true }).eq('id', bill.id));
   else unwrap(await supabase.from('bills').delete().eq('id', bill.id));
+}
+
+/** Counts a bill as a fixed or a variable expense. */
+export async function setBillExpenseType(id: string, expense_type: 'fixed' | 'variable') {
+  unwrap(await supabase.from('bills').update({ expense_type }).eq('id', id));
+}
+
+/** Counts a spending category as fixed or variable. */
+export async function setCategoryExpenseType(id: string, expense_type: 'fixed' | 'variable') {
+  unwrap(await supabase.from('categories').update({ expense_type }).eq('id', id));
+}
+
+// ---------------------------------------------------------------------------
+// Expected income: commission/bonus amounts and one-off income
+// ---------------------------------------------------------------------------
+
+export interface ExpectedIncome {
+  id: string;
+  /** Set when this replaces a scheduled paycheck on pay_date. */
+  income_source_id: string | null;
+  pay_date: string;
+  name: string;
+  /** Take-home. */
+  amount: number;
+  /** Before taxes, when entered as commission. */
+  gross: number | null;
+  /** Your own total withholding %, if you set one. */
+  tax_rate: number | null;
+}
+
+export type ExpectedIncomeInput = Omit<ExpectedIncome, 'id'>;
+
+export async function fetchExpectedIncome(from: string, to: string): Promise<ExpectedIncome[]> {
+  const rows = unwrap(
+    await supabase
+      .from('expected_income')
+      .select('id, income_source_id, pay_date, name, amount, gross, tax_rate')
+      .gte('pay_date', from)
+      .lte('pay_date', to)
+      .order('pay_date'),
+  ) as ExpectedIncome[];
+  return rows.map((r) => ({ ...r, amount: Number(r.amount), gross: num(r.gross), tax_rate: num(r.tax_rate) }));
+}
+
+export async function fetchExpectedIncomeById(id: string): Promise<ExpectedIncome | null> {
+  const rows = unwrap(
+    await supabase
+      .from('expected_income')
+      .select('id, income_source_id, pay_date, name, amount, gross, tax_rate')
+      .eq('id', id)
+      .limit(1),
+  ) as ExpectedIncome[];
+  const r = rows[0];
+  return r ? { ...r, amount: Number(r.amount), gross: num(r.gross), tax_rate: num(r.tax_rate) } : null;
+}
+
+export async function saveExpectedIncome(householdId: string, row: ExpectedIncomeInput & { id?: string }) {
+  const { id, ...fields } = row;
+  if (id) unwrap(await supabase.from('expected_income').update(fields).eq('id', id));
+  else unwrap(await supabase.from('expected_income').insert({ ...fields, household_id: householdId }));
+}
+
+export async function deleteExpectedIncome(id: string) {
+  unwrap(await supabase.from('expected_income').delete().eq('id', id));
+}
+
+export async function saveTaxSettings(householdId: string, tax_state: string | null, retirement_pct: number) {
+  unwrap(await supabase.from('households').update({ tax_state, retirement_pct }).eq('id', householdId));
+}
+
+/** Spending and refunds in a category (null = uncategorized) between dates. */
+export async function fetchCategoryTransactions(opts: { categoryId: string | null; from: string; to: string }) {
+  let q = supabase
+    .from('transaction_flows')
+    .select('id, date, description, merchant, amount, flow, account_id')
+    .in('flow', ['spending', 'refund'])
+    .gte('date', opts.from)
+    .lt('date', opts.to)
+    .order('date', { ascending: false })
+    .limit(1000);
+  q = opts.categoryId ? q.eq('category_id', opts.categoryId) : q.is('category_id', null);
+  const rows = unwrap(await q) as {
+    id: string;
+    date: string;
+    description: string;
+    merchant: string | null;
+    amount: number;
+    flow: 'spending' | 'refund';
+    account_id: string;
+  }[];
+  return rows.map((r) => ({ ...r, amount: Number(r.amount) }));
 }
 
 /** Re-runs paycheck and bill detection now (also runs after every sync). */

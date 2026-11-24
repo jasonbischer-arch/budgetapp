@@ -52,7 +52,12 @@ const parseNum = (s: string) => {
 
 export default function BillEditor() {
   const c = useTheme();
-  const { id, accountId, debt } = useLocalSearchParams<{ id: string; accountId?: string; debt?: string }>();
+  const { id, accountId, debt, type } = useLocalSearchParams<{
+    id: string;
+    accountId?: string;
+    debt?: string;
+    type?: 'fixed' | 'variable';
+  }>();
   const isNew = id === 'new';
   const { household } = useAuth();
 
@@ -61,6 +66,7 @@ export default function BillEditor() {
   const [existing, setExisting] = useState<Bill | null>(null);
   const [kind, setKind] = useState<Kind>(debt || accountId ? 'debt' : 'bill');
   const [debtKind, setDebtKind] = useState<DebtKind | null>(null);
+  const [expenseType, setExpenseType] = useState<'fixed' | 'variable'>(type === 'variable' ? 'variable' : 'fixed');
   const [name, setName] = useState('');
   const [amount, setAmount] = useState('');
   const [frequency, setFrequency] = useState<BillFrequency>('monthly');
@@ -83,6 +89,7 @@ export default function BillEditor() {
         setExisting(b);
         setKind(b.is_debt ? 'debt' : 'bill');
         setDebtKind(b.debt_kind);
+        setExpenseType(b.expense_type ?? 'fixed');
         setName(b.name);
         setAmount(b.amount != null ? String(b.amount) : '');
         setFrequency(b.frequency);
@@ -162,6 +169,7 @@ export default function BillEditor() {
         apr: isDebt ? rate : null,
         account_id: isDebt ? linked : null,
         category_id: existing?.category_id ?? null,
+        expense_type: expenseType,
       });
       router.back();
     } catch (e) {
@@ -236,6 +244,21 @@ export default function BillEditor() {
             liability?.minimum_payment != null ? `Minimum payment (${money(liability.minimum_payment)})` : '$0.00'
           }
         />
+      </Card>
+
+      <Card>
+        <T variant="small">Count it as</T>
+        <Segmented
+          options={[
+            { value: 'fixed', label: '📌 Fixed expense' },
+            { value: 'variable', label: '🛒 Variable expense' },
+          ]}
+          value={expenseType}
+          onChange={setExpenseType}
+        />
+        <T variant="small">
+          Fixed: the same every month (rent, loans, insurance). Variable: changes month to month.
+        </T>
       </Card>
 
       <Card>

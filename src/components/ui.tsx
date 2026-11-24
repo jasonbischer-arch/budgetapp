@@ -165,6 +165,7 @@ export function Stat({
   accent,
   icon,
   style,
+  onPress,
 }: {
   label: string;
   value: string;
@@ -174,8 +175,10 @@ export function Stat({
   accent?: string;
   icon?: string;
   style?: ViewStyle;
+  /** Makes the tile a button (shows a chevron). */
+  onPress?: () => void;
 }) {
-  return (
+  const tile = (
     <Card
       style={{
         flex: 1,
@@ -187,6 +190,7 @@ export function Stat({
       <T variant="small">
         {icon ? `${icon} ` : ''}
         {label}
+        {onPress ? '  ›' : ''}
       </T>
       <T
         variant="money"
@@ -198,6 +202,16 @@ export function Stat({
       </T>
       {sub ? <T variant="small">{sub}</T> : null}
     </Card>
+  );
+  if (!onPress) return tile;
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`${label}: ${value}. Show details`}
+      style={({ pressed }) => ({ flex: 1, opacity: pressed ? 0.7 : 1 })}>
+      {tile}
+    </Pressable>
   );
 }
 
@@ -266,6 +280,7 @@ export function MeterRow({
   limit,
   color,
   icon,
+  onPress,
 }: {
   label: string;
   value: number;
@@ -277,12 +292,15 @@ export function MeterRow({
   color?: string;
   /** Emoji shown before the label. */
   icon?: string;
+  /** Makes the row a button (shows a chevron). */
+  onPress?: () => void;
 }) {
   const c = useTheme();
   const over = limit != null && limit > 0 && value > limit;
   const scale = Math.max(max, limit ?? 0) || 1;
-  return (
-    <View style={{ gap: 6 }} accessible accessibilityLabel={`${label}: ${figure}${detail ? `, ${detail}` : ''}`}>
+  const a11y = `${label}: ${figure}${detail ? `, ${detail}` : ''}`;
+  const row = (
+    <View style={{ gap: 6 }} accessible={!onPress} accessibilityLabel={a11y}>
       <Row style={{ justifyContent: 'space-between' }}>
         <Row style={{ gap: Spacing.sm, flexShrink: 1 }}>
           {icon && <IconBubble emoji={icon} color={color ?? c.bar} size={30} />}
@@ -292,6 +310,7 @@ export function MeterRow({
         </Row>
         <T variant="money" color={over ? c.negative : undefined}>
           {figure}
+          {onPress ? <T variant="small"> ›</T> : null}
         </T>
       </Row>
       <View style={[styles.track, { backgroundColor: c.track }]}>
@@ -320,6 +339,16 @@ export function MeterRow({
       </View>
       {detail ? <T variant="small">{detail}</T> : null}
     </View>
+  );
+  if (!onPress) return row;
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`${a11y}. Show transactions`}
+      style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}>
+      {row}
+    </Pressable>
   );
 }
 
@@ -441,3 +470,26 @@ const styles = StyleSheet.create({
   track: { height: 8, borderRadius: 4 },
   row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
 });
+
+/** A small selectable pill (filters, pickers). */
+export function Chip({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
+  const c = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      style={{
+        paddingVertical: 6,
+        paddingHorizontal: 12,
+        borderRadius: Radius.pill,
+        borderWidth: 1,
+        borderColor: selected ? c.primary : c.border,
+        backgroundColor: selected ? c.primary : 'transparent',
+      }}>
+      <T variant="small" color={selected ? c.primaryText : c.text}>
+        {label}
+      </T>
+    </Pressable>
+  );
+}

@@ -9,6 +9,10 @@ export interface Household {
   invite_code: string;
   /** Savings set aside from every paycheck; null = calculated automatically. */
   savings_per_check: number | null;
+  /** 2-letter state for take-home estimates. */
+  tax_state: string | null;
+  /** Pre-tax retirement % taken from commission. */
+  retirement_pct: number;
 }
 
 interface AuthState {
@@ -34,11 +38,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // RLS returns only the household this user belongs to.
     const { data } = await supabase
       .from('households')
-      .select('id, name, invite_code, savings_per_check')
+      .select('id, name, invite_code, savings_per_check, tax_state, retirement_pct')
       .maybeSingle();
     const h = data as Household | null;
     setHousehold(
-      h ? { ...h, savings_per_check: h.savings_per_check == null ? null : Number(h.savings_per_check) } : null,
+      h
+        ? {
+            ...h,
+            savings_per_check: h.savings_per_check == null ? null : Number(h.savings_per_check),
+            retirement_pct: Number(h.retirement_pct ?? 0),
+          }
+        : null,
     );
   }, []);
 

@@ -2,9 +2,11 @@ import {
   Account,
   Bill,
   Category,
+  ExpectedIncome,
   fetchAccounts,
   fetchBills,
   fetchCategories,
+  fetchExpectedIncome,
   fetchFirstTransactionDate,
   fetchIncomeSources,
   fetchLiabilities,
@@ -15,9 +17,9 @@ import {
   refreshAutoBudgets,
   useQuery,
 } from './data';
-import { monthStart } from './insights';
+import { BillLike, monthStart } from './insights';
 import { currentBalance, payoff } from './debt';
-import { BillSchedule, PaySchedule, today } from './schedule';
+import { BillSchedule, endOfMonth, monthlyAmount, paydays, PaySchedule, today } from './schedule';
 
 export interface HouseholdData {
   accounts: Account[];
@@ -27,6 +29,8 @@ export interface HouseholdData {
   incomes: IncomeSource[];
   bills: Bill[];
   liabilities: Liability[];
+  /** Commission/bonus amounts and extra income, today through month end. */
+  expected: ExpectedIncome[];
 }
 
 const EMPTY: HouseholdData = {
@@ -37,6 +41,7 @@ const EMPTY: HouseholdData = {
   incomes: [],
   bills: [],
   liabilities: [],
+  expected: [],
 };
 
 /** Everything the Overview and Plan tabs need, reloaded on focus. */
@@ -45,7 +50,7 @@ export function useHouseholdData() {
     // Keep automatic budgets at the latest 12-month average (cheap; only
     // changes categories that follow the average).
     await refreshAutoBudgets().catch(() => {});
-    const [accounts, categories, flows, firstDate, incomes, bills, liabilities] = await Promise.all([
+    const [accounts, categories, flows, firstDate, incomes, bills, liabilities, expected] = await Promise.all([
       fetchAccounts(),
       fetchCategories(),
       fetchMonthlyFlows(monthStart(new Date(), -12)),
@@ -53,8 +58,9 @@ export function useHouseholdData() {
       fetchIncomeSources(),
       fetchBills(),
       fetchLiabilities(),
+      fetchExpectedIncome(today(), endOfMonth(today())),
     ]);
-    return { accounts, categories, flows, firstDate, incomes, bills, liabilities };
+    return { accounts, categories, flows, firstDate, incomes, bills, liabilities, expected };
   }, EMPTY);
 }
 
@@ -110,4 +116,69 @@ export function debtDetails(bill: Bill, accounts: Account[], liabilities: Liabil
   const monthlyInterest = balance != null && apr != null ? (balance * apr) / 100 / 12 : null;
   const plan = balance != null && payment != null && apr != null ? payoff(balance, apr, payment, today()) : null;
   return { account, balance, apr, payment, monthlyInterest, payoff: plan, linked: !!account };
+}
+
+export interface IncomingCheck {
+  key: string;
+  name: string;
+  date: string;
+  amount: number;
+  /** The paycheck schedule this comes from (null: extra income you added). */
+  sourceId: string | null;
+  /** Your edit for this check, if any. */
+  expected: ExpectedIncome | null;
+  /** What the schedule says, before your edit. */
+  scheduled: number | null;
+}
+
+/**
+ * Paychecks from `from` through `to`, with your edits applied: an edited
+ * check shows your amount (e.g. this month's commission), and extra income
+ * you added appears on its date.
+ */
+export function incomingChecks(
+  incomes: IncomeSource[],
+  expected: ExpectedIncome[],
+  from: string,
+  to: string,
+): IncomingCheck[] {
+  const used = new Set<string>();
+  const out: IncomingCheck[] = [];
+  for (const src of incomes) {
+    for (const p of paydays(src, from, to)) {
+      const edit = expected.find((e) => e.income_source_id === src.id && e.pay_date === p.date);
+      if (edit) used.add(edit.id);
+      out.push({
+        key: p.id,
+        name: src.name,
+        date: p.date,
+        amount: edit ? edit.amount : p.amount,
+        sourceId: src.id,
+        expected: edit ?? null,
+        scheduled: p.amount,
+      });
+    }
+  }
+  for (const e of expected) {
+    if (used.has(e.id) || e.pay_date < from || e.pay_date > to) continue;
+    out.push({ key: e.id, name: e.name, date: e.pay_date, amount: e.amount, sourceId: null, expected: e, scheduled: null });
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/**
+ * Bills that are real spending, as monthly amounts. Payments to a credit
+ * card are left out: the card's purchases already count as spending.
+ */
+export function expenseBills(bills: Bill[], accounts: Account[], liabilities: Liability[]): BillLike[] {
+  const cards = new Set(accounts.filter((a) => a.type === 'credit').map((a) => a.id));
+  return bills
+    .filter((b) => !(b.account_id && cards.has(b.account_id)))
+    .map((b) => ({
+      id: b.id,
+      name: b.name,
+      monthly: monthlyAmount(b.frequency, toBillSchedule(b, liabilities).amount),
+      category_id: b.category_id,
+      expense_type: b.expense_type ?? 'fixed',
+    }));
 }

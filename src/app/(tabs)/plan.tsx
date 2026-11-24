@@ -35,6 +35,7 @@ import {
 import { money, moneyWhole, monthShort, ordinal, shortDate, weekday } from '@/lib/format';
 import {
   debtDetails,
+  expenseBills,
   HouseholdData,
   toBillSchedule,
   useHouseholdData,
@@ -42,7 +43,7 @@ import {
 import {
   categoryAverages,
   cutSuggestions,
-  expenseSplit,
+  expenseBreakdown,
   paycheckSplit,
   periodMonths,
   spendingByCategory,
@@ -733,11 +734,13 @@ function BudgetView({ data, reload }: { data: HouseholdData; reload: () => void 
 
   const months = trailingMonths(now, data.firstDate);
   const avg = categoryAverages(data.flows, months);
-  const billsPerMonth = data.bills.reduce(
-    (s, b) => s + monthlyAmount(b.frequency, toBillSchedule(b, data.liabilities).amount),
-    0,
+  const split = expenseBreakdown(
+    data.flows,
+    data.categories,
+    months,
+    expenseBills(data.bills, data.accounts, data.liabilities),
   );
-  const split = expenseSplit(data.flows, data.categories, months, billsPerMonth);
+  const hasBills = data.bills.length > 0;
   const cuts = cutSuggestions(data.flows, data.categories, now, data.firstDate);
   const monthlySavings = cuts.reduce((s, x) => s + x.savings, 0);
   const thisMonth = new Map(spendingByCategory(data.flows, periodMonths(now, 1)).map((x) => [x.categoryId, x.amount]));
@@ -779,10 +782,18 @@ function BudgetView({ data, reload }: { data: HouseholdData; reload: () => void 
           label="Fixed / month"
           icon="📌"
           accent="#6250D6"
-          value={moneyWhole(split.fixed)}
-          sub={split.fromBills ? 'from your bills' : 'rent, utilities, loans…'}
+          value={moneyWhole(split.fixed.total)}
+          sub="tap to see & edit"
+          onPress={() => router.push('/expenses/fixed')}
         />
-        <Stat label="Variable / month" icon="🛒" accent="#EDA100" value={moneyWhole(split.variable)} sub="groceries, dining…" />
+        <Stat
+          label="Variable / month"
+          icon="🛒"
+          accent="#EDA100"
+          value={moneyWhole(split.variable.total)}
+          sub="tap to see & edit"
+          onPress={() => router.push('/expenses/variable')}
+        />
       </Row>
       <T variant="small" style={{ marginTop: -Spacing.sm }}>
         Monthly averages over {months.size || 0} complete month{months.size === 1 ? '' : 's'} of bank history.
@@ -860,7 +871,7 @@ function BudgetView({ data, reload }: { data: HouseholdData; reload: () => void 
       <SectionHeader title="Fixed expenses" />
       <Card>
         <T variant="muted">
-          {split.fromBills
+          {hasBills
             ? 'Planned from your bills. Average actual spending per month:'
             : 'Add these as bills in the Bills tab so the paycheck plan can schedule them. Average spending per month:'}
         </T>

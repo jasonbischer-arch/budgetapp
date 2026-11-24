@@ -52,6 +52,15 @@ function RootNavigator() {
             name="income/[id]"
             options={{ presentation: 'modal', headerShown: true, title: 'Paycheck' }}
           />
+          <Stack.Screen
+            name="expenses/[type]"
+            options={{ presentation: 'modal', headerShown: true, title: 'Expenses' }}
+          />
+          <Stack.Screen name="payday" options={{ presentation: 'modal', headerShown: true, title: 'Incoming' }} />
+          <Stack.Screen
+            name="category/[id]"
+            options={{ presentation: 'modal', headerShown: true, title: 'Category' }}
+          />
         </Stack.Protected>
       </Stack>
     </AppLock>

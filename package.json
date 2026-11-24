@@ -44,7 +44,7 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --no-warnings tests/schedule.test.ts && node --experimental-strip-types --no-warnings tests/insights.test.ts && node --experimental-strip-types --no-warnings tests/paychecks.test.ts && node --experimental-strip-types --no-warnings tests/bills-detect.test.ts && node --experimental-strip-types --no-warnings tests/debt.test.ts"
+    "test": "node --experimental-strip-types --no-warnings tests/schedule.test.ts && node --experimental-strip-types --no-warnings tests/insights.test.ts && node --experimental-strip-types --no-warnings tests/paychecks.test.ts && node --experimental-strip-types --no-warnings tests/bills-detect.test.ts && node --experimental-strip-types --no-warnings tests/debt.test.ts && node --experimental-strip-types --no-warnings tests/taxes.test.ts"
   },
   "private": true
 }

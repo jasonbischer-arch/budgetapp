@@ -1,8 +1,9 @@
 import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 
 import {
+  Badge,
   Button,
   Card,
   Divider,
@@ -20,18 +21,23 @@ import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
 import { money, moneyWhole, shortDate } from '@/lib/format';
-import { balances, toBillSchedule, useHouseholdData } from '@/lib/household-data';
-import { monthlyAmount } from '@/lib/schedule';
+import {
+  balances,
+  expenseBills,
+  incomingChecks,
+  toBillSchedule,
+  useHouseholdData,
+} from '@/lib/household-data';
 import { categoryEmoji } from '@/lib/visuals';
 import {
-  expenseSplit,
+  expenseBreakdown,
   periodMonths,
   spendingByCategory,
   totalsFor,
   trailingAverages,
   trailingMonths,
 } from '@/lib/insights';
-import { dueDates, endOfMonth, paydays, today } from '@/lib/schedule';
+import { dueDates, endOfMonth, today } from '@/lib/schedule';
 
 type Period = '1' | '3' | '6' | '12';
 const PERIODS: { value: Period; label: string }[] = [
@@ -55,17 +61,18 @@ export default function Overview() {
   const now = useMemo(() => new Date(), []);
   const { cash, cards, cardAccounts } = balances(data.accounts);
   const avg = trailingAverages(data.flows, now, data.firstDate);
-  const billsPerMonth = data.bills.reduce(
-    (s, b) => s + monthlyAmount(b.frequency, toBillSchedule(b, data.liabilities).amount),
-    0,
+  const split = expenseBreakdown(
+    data.flows,
+    data.categories,
+    trailingMonths(now, data.firstDate),
+    expenseBills(data.bills, data.accounts, data.liabilities),
   );
-  const split = expenseSplit(data.flows, data.categories, trailingMonths(now, data.firstDate), billsPerMonth);
 
   // Rest of this month: paychecks still coming, bills still due.
   const rest = useMemo(() => {
     const from = today();
     const to = endOfMonth(from);
-    const checks = data.incomes.flatMap((s) => paydays(s, from, to)).sort((a, b) => a.date.localeCompare(b.date));
+    const checks = incomingChecks(data.incomes, data.expected, from, to);
     const bills = data.bills
       .map((b) => toBillSchedule(b, data.liabilities))
       .flatMap((b) => dueDates(b, from, to))
@@ -74,7 +81,7 @@ export default function Overview() {
     const incoming = checks.reduce((s, x) => s + x.amount, 0);
     const outgoing = bills.reduce((s, x) => s + x.amount, 0);
     return { checks, bills, incoming, outgoing };
-  }, [data.incomes, data.bills, data.liabilities]);
+  }, [data.incomes, data.expected, data.bills, data.liabilities]);
 
   const months = periodMonths(now, Number(period));
   const totals = totalsFor(data.flows, months);
@@ -151,7 +158,6 @@ export default function Overview() {
       <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
         <Stat label="Income" icon="💰" accent="#1BAF7A" value={moneyWhole(avg.income)} color={c.positive} />
         <Stat label="Expenses" icon="🧾" accent="#EB6834" value={moneyWhole(avg.spent)} />
-        <Stat label="Saved" icon="🐷" accent="#2A78D6" value={moneyWhole(avg.saved)} />
       </Row>
       {avg.months > 0 && (
         <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
@@ -159,10 +165,18 @@ export default function Overview() {
             label="Fixed"
             icon="📌"
             accent="#6250D6"
-            value={moneyWhole(split.fixed)}
-            sub={split.fromBills ? 'from your bills' : 'rent, utilities, loans…'}
+            value={moneyWhole(split.fixed.total)}
+            sub={`${split.fixed.items.length} expense${split.fixed.items.length === 1 ? '' : 's'} · tap to edit`}
+            onPress={() => router.push('/expenses/fixed')}
           />
-          <Stat label="Variable" icon="🛒" accent="#EDA100" value={moneyWhole(split.variable)} sub="groceries, dining…" />
+          <Stat
+            label="Variable"
+            icon="🛒"
+            accent="#EDA100"
+            value={moneyWhole(split.variable.total)}
+            sub={`${split.variable.items.length} expense${split.variable.items.length === 1 ? '' : 's'} · tap to edit`}
+            onPress={() => router.push('/expenses/variable')}
+          />
         </Row>
       )}
       <T variant="small" style={{ marginTop: -Spacing.sm }}>
@@ -213,15 +227,40 @@ export default function Overview() {
             <Divider />
             {rest.checks.length === 0 && <T variant="muted">No more paychecks this month.</T>}
             {rest.checks.map((x) => (
-              <Row key={x.id} style={{ justifyContent: 'space-between' }}>
-                <T>
-                  {x.name} <T variant="small">· {shortDate(x.date)}</T>
-                </T>
-                <T variant="money" color={c.positive}>
-                  +{money(x.amount)}
-                </T>
-              </Row>
+              <Pressable
+                key={x.key}
+                accessibilityRole="button"
+                accessibilityLabel={`${x.name}, ${shortDate(x.date)}, ${money(x.amount)}. Edit amount`}
+                onPress={() =>
+                  router.push(
+                    x.expected
+                      ? { pathname: '/payday', params: { id: x.expected.id } }
+                      : {
+                          pathname: '/payday',
+                          params: { source: x.sourceId ?? '', date: x.date, name: x.name, scheduled: String(x.scheduled ?? '') },
+                        },
+                  )
+                }
+                style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}>
+                <Row style={{ justifyContent: 'space-between' }}>
+                  <Row style={{ gap: Spacing.xs, flexShrink: 1 }}>
+                    <T numberOfLines={1} style={{ flexShrink: 1 }}>
+                      {x.name} <T variant="small">· {shortDate(x.date)}</T>
+                    </T>
+                    {x.expected?.gross != null && <Badge text="commission" tone="primary" />}
+                    {x.expected && x.expected.gross == null && x.sourceId && <Badge text="edited" />}
+                  </Row>
+                  <T variant="money" color={c.positive}>
+                    +{money(x.amount)} <T variant="small">✎</T>
+                  </T>
+                </Row>
+              </Pressable>
             ))}
+            <Button
+              title="＋ Add commission or other income"
+              kind="secondary"
+              onPress={() => router.push({ pathname: '/payday', params: { date: today() } })}
+            />
             {rest.bills.length === 0 && <T variant="muted">No more bills due this month.</T>}
             {rest.bills.map((x) => (
               <Row key={x.id} style={{ justifyContent: 'space-between' }}>
@@ -281,6 +320,9 @@ export default function Overview() {
           return (
             <MeterRow
               key={categoryId ?? 'none'}
+              onPress={() =>
+                router.push({ pathname: '/category/[id]', params: { id: categoryId ?? 'none', months: period } })
+              }
               icon={categoryEmoji(cat)}
               color={cat?.color ?? c.textMuted}
               label={cat?.name ?? 'Uncategorized'}
