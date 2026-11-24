@@ -99,23 +99,33 @@ password `pass_good`.
 3. Banks connected in sandbox don't carry over. Remove them and connect the
    real ones.
 
-### 4. Publishing the website
+### 4. The website (Vercel)
 
-`npx expo export --platform web` builds a static site in `dist/` for Netlify,
-Vercel or Cloudflare Pages. Then add its address (for example
-`https://budget.example.com`) to an `ALLOWED_ORIGINS` secret in Supabase, so
-the functions accept requests from it.
+`vercel.json` holds everything Vercel needs: the build command, single-page
+routing, caching, and strict security headers (a Content Security Policy that
+only allows this app, Supabase and Plaid; no framing; HTTPS only). The site is
+marked `noindex` so search engines skip it.
 
-## iPhone
+1. At vercel.com, sign in with GitHub, choose **Add New → Project** and import
+   `budgetapp`. Keep the detected settings and click **Deploy**.
+2. Copy the site address, e.g. `https://budgetapp-abc.vercel.app`.
+3. In Supabase:
+   - **Edge Functions → Secrets:** add `ALLOWED_ORIGINS` with that address
+     (comma-separate several). Without it, connecting banks and syncing from
+     the website are refused.
+   - **Authentication → URL Configuration:** set **Site URL** to the address.
 
-- **Expo Go** (`npx expo start`, then scan the QR code) runs the app for
-  viewing and editing. It can't open Plaid's native bank sign-in, so connect
-  banks from the website. They show up on the phone right away.
-- **The full app** with in-app bank connection and Face ID needs a build:
-  `npx eas-cli@latest build --profile development --platform ios`. That needs
-  an Apple Developer account ($99/year). TestFlight is the private way to
-  install it on both phones.
-- Or open the website in Safari and use **Share → Add to Home Screen**.
+Every push to `main` redeploys the site automatically.
+
+## On your iPhones
+
+- **Installable app (free):** open the website in Safari → **Share → Add to
+  Home Screen**. It gets the Budget icon and opens full screen like an app.
+- **Full native app (later):** needs an Apple Developer account ($99/year).
+  `eas.json` is ready: `npx eas-cli@latest build --profile production
+  --platform ios`, then `npx eas-cli@latest submit --platform ios` to send it
+  to TestFlight. This adds Face ID and the native Plaid screen.
+- **While developing:** Expo Go (`npx expo start`, scan the QR code).
 
 ## Maintenance notes
 
