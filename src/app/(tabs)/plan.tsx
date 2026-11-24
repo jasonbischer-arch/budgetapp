@@ -121,12 +121,16 @@ function usePlan(data: HouseholdData, savingsOverride: number | null) {
     const lefts = plan.checks.map((x) => x.leftover).sort((a, b) => a - b);
     const typicalAfterBills = lefts.length ? lefts[Math.floor(lefts.length / 2)] : 0;
 
-    // Variable spending per month: your budgets where set, else the average.
+    // Spending money per month: the same variable categories as Variable /
+    // month (budgets where set, else the average). Variable bills aren't
+    // included here because the plan already pays them as bills.
     const months = trailingMonths(new Date(), data.firstDate);
-    const avg = categoryAverages(withoutBills(data.flows), months);
-    const variablePerMonth = data.categories
-      .filter((c) => c.kind === 'expense' && c.expense_type === 'variable')
-      .reduce((s, c) => s + (c.monthly_budget ?? avg.get(c.id) ?? 0), 0);
+    const variablePerMonth = expenseBreakdown(
+      data.flows,
+      data.categories,
+      months,
+      expenseBills(data.bills, data.accounts, data.liabilities),
+    ).variable.items.filter((i) => i.kind === 'category').reduce((s, i) => s + i.monthly, 0);
     const checksPerMonth = data.incomes.reduce((s, x) => s + monthlyAmount(x.frequency, 1), 0);
 
     const split = paycheckSplit({ typicalAfterBills, variablePerMonth, checksPerMonth, savingsOverride });

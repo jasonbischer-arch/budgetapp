@@ -154,7 +154,12 @@ export interface ExpenseItem {
   kind: 'bill' | 'category';
   id: string | null; // category id may be null (uncategorized)
   name: string;
+  /** What it counts as per month: a category's budget when set, else its average. */
   monthly: number;
+  /** Categories: 12-month average actually spent (bill payments left out). */
+  average?: number;
+  /** Categories: true when `monthly` is the budget you set. */
+  budgeted?: boolean;
 }
 
 /**
@@ -187,17 +192,20 @@ export function expenseBreakdown(
   for (const b of bills) {
     if (b.monthly > 0) side[b.expense_type].push({ kind: 'bill', id: b.id, name: b.name, monthly: b.monthly });
   }
-  for (const [id, amount] of avg) {
-    const rest = amount - (id ? (estimatedByCat.get(id) ?? 0) : 0);
-    if (rest < 1) continue;
-    const cat = id ? categories.find((c) => c.id === id) : undefined;
-    if (cat?.expense_type === 'fixed') continue; // fixed = your bills only
-    side.variable.push({
-      kind: 'category',
-      id,
-      name: cat?.name ?? 'Uncategorized',
-      monthly: rest,
-    });
+  // Variable categories count at their budget when you've set one (so this
+  // matches Plan > Budget), otherwise at what you actually spend.
+  const spent = (id: string | null) => Math.max(0, (avg.get(id) ?? 0) - (id ? (estimatedByCat.get(id) ?? 0) : 0));
+  for (const cat of categories) {
+    if (cat.kind !== 'expense' || cat.expense_type === 'fixed') continue; // fixed = your bills only
+    const average = spent(cat.id);
+    const budgeted = cat.monthly_budget != null;
+    const monthly = budgeted ? cat.monthly_budget! : average;
+    if (monthly < 1) continue;
+    side.variable.push({ kind: 'category', id: cat.id, name: cat.name, monthly, average, budgeted });
+  }
+  const uncategorized = spent(null);
+  if (uncategorized >= 1) {
+    side.variable.push({ kind: 'category', id: null, name: 'Uncategorized', monthly: uncategorized, average: uncategorized, budgeted: false });
   }
   const sum = (xs: ExpenseItem[]) => xs.reduce((s, x) => s + x.monthly, 0);
   side.fixed.sort((a, b) => b.monthly - a.monthly);

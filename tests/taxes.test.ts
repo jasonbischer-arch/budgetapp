@@ -103,3 +103,23 @@ assert(near(moved.fixed.total, 0) && near(moved.variable.total, 150 + 60 + 800),
   assert(pk(null, "ALLY ALLY PAYMT 228358152146 WEB ID: 9833122002") === "ALLY ALLY PAYMT", "payee key matches the database's rules");
   assert(cs(r, health, new Date(2026, 10, 15)).length === 0, "bill payments aren't suggested as cuts");
 }
+
+// --- Variable / month follows the budgets you set -------------------------------
+{
+  const { expenseBreakdown: eb } = await import("../src/lib/insights.ts");
+  const months = new Set(["2026-10-01", "2026-09-01"]);
+  const cats = [
+    { id: "dine", name: "Dining", kind: "expense" as const, expense_type: "variable" as const, provider_categories: [], monthly_budget: 400 },
+    { id: "groc", name: "Groceries", kind: "expense" as const, expense_type: "variable" as const, provider_categories: [], monthly_budget: null },
+    { id: "gift", name: "Gifts", kind: "expense" as const, expense_type: "variable" as const, provider_categories: [], monthly_budget: 50 },
+  ];
+  const rows = [...months].flatMap((m) => [
+    { month: m, flow: "spending" as const, category_id: "dine", bill_id: null, total: -600 },
+    { month: m, flow: "spending" as const, category_id: "groc", bill_id: null, total: -800 },
+  ]);
+  const out = eb(rows, cats, months, []);
+  assert(near(out.variable.total, 400 + 800 + 50), "variable = budgets where set, averages elsewhere: " + out.variable.total);
+  const dine = out.variable.items.find((i) => i.id === "dine")!;
+  assert(dine.budgeted && near(dine.monthly, 400) && near(dine.average!, 600), "a budgeted category shows its budget and its real average");
+  assert(out.variable.items.some((i) => i.id === "gift"), "a budget with no spending yet still counts");
+}

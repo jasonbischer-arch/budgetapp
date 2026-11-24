@@ -101,7 +101,9 @@ export default function ExpensesSheet() {
                   ? bill.frequency === 'monthly'
                     ? `Due on the ${ordinal(bill.due_day)}`
                     : `${bill.frequency}, ${money(bill.amount ?? 0)} each`
-                  : 'Monthly average from your bank activity'}
+                  : item.budgeted
+                    ? `Your budget · you average ${money(item.average ?? 0)}`
+                    : 'Monthly average from your bank activity'}
               </T>
             </View>
           </Row>
