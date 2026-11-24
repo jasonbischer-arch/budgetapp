@@ -39,6 +39,55 @@ export interface Category {
   monthly_budget: number | null;
   sort_order: number;
   provider_categories: string[];
+  /** Emoji you picked (otherwise one is chosen from the bank category). */
+  icon: string | null;
+}
+
+/** Built-in categories are matched to the bank's categories; yours aren't. */
+export const isCustomCategory = (c: Pick<Category, 'provider_categories'>) => !c.provider_categories?.length;
+
+export interface CategoryInput {
+  name: string;
+  color: string;
+  icon: string | null;
+  kind: 'expense' | 'income';
+  expense_type: 'fixed' | 'variable';
+}
+
+/** Creates a category and returns its id. */
+export async function createCategory(householdId: string, input: CategoryInput): Promise<string> {
+  const row = unwrap(
+    await supabase
+      .from('categories')
+      .insert({
+        ...input,
+        household_id: householdId,
+        is_income: input.kind === 'income',
+        provider_categories: [],
+        sort_order: 50,
+      })
+      .select('id')
+      .single(),
+  ) as { id: string };
+  return row.id;
+}
+
+export async function updateCategory(id: string, input: CategoryInput) {
+  unwrap(await supabase.from('categories').update({ ...input, is_income: input.kind === 'income' }).eq('id', id));
+}
+
+/** Deletes a category; its transactions become uncategorized. */
+export async function deleteCategory(id: string) {
+  unwrap(await supabase.from('categories').delete().eq('id', id));
+}
+
+export async function countCategoryTransactions(id: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('transactions')
+    .select('id', { count: 'exact', head: true })
+    .eq('category_id', id);
+  if (error) throw new Error(error.message);
+  return count ?? 0;
 }
 
 export type Frequency = 'weekly' | 'biweekly' | 'semimonthly' | 'monthly';

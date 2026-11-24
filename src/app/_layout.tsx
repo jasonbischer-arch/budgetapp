@@ -58,6 +58,14 @@ function RootNavigator() {
           />
           <Stack.Screen name="payday" options={{ presentation: 'modal', headerShown: true, title: 'Incoming' }} />
           <Stack.Screen
+            name="categories/index"
+            options={{ presentation: 'modal', headerShown: true, title: 'Categories' }}
+          />
+          <Stack.Screen
+            name="categories/[id]"
+            options={{ presentation: 'modal', headerShown: true, title: 'Category' }}
+          />
+          <Stack.Screen
             name="category/[id]"
             options={{ presentation: 'modal', headerShown: true, title: 'Category' }}
           />

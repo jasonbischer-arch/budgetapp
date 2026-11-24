@@ -54,7 +54,14 @@ export default function Transactions() {
 
   return (
     <Screen refreshing={loading} onRefresh={reload}>
-      <T variant="title">Transactions</T>
+      <Row style={{ justifyContent: 'space-between' }}>
+        <T variant="title">Transactions</T>
+        <Pressable accessibilityRole="button" onPress={() => router.push('/categories')} hitSlop={8}>
+          <T color={c.primary} style={{ fontWeight: '600' }}>
+            🏷️ Categories
+          </T>
+        </Pressable>
+      </Row>
       <MonthPicker month={month} />
       <Input placeholder="Search" value={search} onChangeText={setSearch} autoCorrect={false} />
       <ErrorText message={error} />

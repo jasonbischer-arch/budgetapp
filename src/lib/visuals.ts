@@ -4,6 +4,7 @@ interface CategoryLike {
   name: string;
   color?: string;
   provider_categories?: string[];
+  icon?: string | null;
 }
 
 /** Most specific first: Plaid detailed categories, then primary, then name words. */
@@ -21,6 +22,7 @@ const CATEGORY_EMOJI: [string, string][] = [
   ['PERSONAL_CARE', '💇'],
   ['GENERAL_SERVICES_INSURANCE', '🛡️'],
   ['GENERAL_SERVICES_EDUCATION', '🎓'],
+  ['GENERAL_SERVICES_CHILDCARE', '🧸'],
   ['GENERAL_SERVICES', '📺'],
   ['GOVERNMENT_AND_NON_PROFIT_DONATIONS', '🎁'],
   ['GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT', '🧾'],
@@ -59,6 +61,7 @@ const NAME_EMOJI: [RegExp, string][] = [
 
 export function categoryEmoji(cat: CategoryLike | undefined | null): string {
   if (!cat) return '❔';
+  if (cat.icon) return cat.icon;
   for (const [code, emoji] of CATEGORY_EMOJI) {
     if (cat.provider_categories?.includes(code)) return emoji;
   }

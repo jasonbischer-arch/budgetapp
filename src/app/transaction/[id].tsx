@@ -1,5 +1,5 @@
-import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, Switch, View } from 'react-native';
 
 import { Button, Card, ErrorText, Input, Row, Screen, T } from '@/components/ui';
@@ -8,6 +8,10 @@ import { useTheme } from '@/hooks/use-theme';
 import { Category, fetchCategories, Transaction, updateTransaction } from '@/lib/data';
 import { money, shortDate } from '@/lib/format';
 import { supabase } from '@/lib/supabase';
+import { categoryEmoji } from '@/lib/visuals';
+
+// Spending first, then income, then savings/transfers.
+const KIND_ORDER = { expense: 0, income: 1, savings: 2, transfer: 3 } as const;
 
 export default function TransactionDetail() {
   const c = useTheme();
@@ -35,6 +39,29 @@ export default function TransactionDetail() {
       setExcluded(t.excluded);
     })().catch((e) => setError(String(e)));
   }, [id]);
+
+  // Back from creating a category: show it, and the transaction's new category.
+  const firstFocus = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      if (firstFocus.current) {
+        firstFocus.current = false;
+        return;
+      }
+      (async () => {
+        const [cats, { data }] = await Promise.all([
+          fetchCategories(),
+          supabase.from('transactions').select('category_id').eq('id', id).single(),
+        ]);
+        setCategories(cats);
+        if (data) setCategoryId((data as { category_id: string | null }).category_id);
+      })().catch(() => {});
+    }, [id]),
+  );
+
+  const sorted = [...categories].sort(
+    (a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.name.localeCompare(b.name),
+  );
 
   async function save() {
     setSaving(true);
@@ -70,9 +97,16 @@ export default function TransactionDetail() {
       </Card>
 
       <Card>
-        <T variant="heading">Category</T>
+        <Row style={{ justifyContent: 'space-between' }}>
+          <T variant="heading">Category</T>
+          <Pressable accessibilityRole="button" onPress={() => router.push('/categories')}>
+            <T variant="small" color={c.primary}>
+              Manage
+            </T>
+          </Pressable>
+        </Row>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm }}>
-          {categories.map((cat) => {
+          {sorted.map((cat) => {
             const selected = cat.id === categoryId;
             return (
               <Pressable
@@ -88,11 +122,26 @@ export default function TransactionDetail() {
                   backgroundColor: selected ? cat.color : 'transparent',
                 }}>
                 <T variant="small" color={selected ? '#fff' : c.text}>
-                  {cat.name}
+                  {categoryEmoji(cat)} {cat.name}
                 </T>
               </Pressable>
             );
           })}
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push({ pathname: '/categories/[id]', params: { id: 'new', assignTo: id } })}
+            style={{
+              paddingVertical: 6,
+              paddingHorizontal: 12,
+              borderRadius: Radius.lg,
+              borderWidth: 1,
+              borderStyle: 'dashed',
+              borderColor: c.primary,
+            }}>
+            <T variant="small" color={c.primary}>
+              ＋ New category
+            </T>
+          </Pressable>
         </View>
       </Card>
 

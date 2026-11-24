@@ -861,7 +861,7 @@ function BudgetView({ data, reload }: { data: HouseholdData; reload: () => void 
         )}
       </Card>
 
-      <SectionHeader title="Variable spending budgets" />
+      <SectionHeader title="Variable spending budgets" action="Categories" onAction={() => router.push('/categories')} />
       <Card>
         <T variant="muted">
           Set automatically to your 12-month average and kept up to date. Type an amount to set your
