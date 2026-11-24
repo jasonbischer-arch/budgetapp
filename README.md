@@ -42,9 +42,9 @@ Plaid API ──► your banks
   wipes the token.
 - The daily sync authenticates with a random secret that's generated in the
   database and kept in Vault.
-- Manual syncs are limited to once a minute. Functions only accept browser
-  requests from the app's own website, and errors shown to users never include
-  internal details.
+- Manual syncs are limited to once a minute. Every function requires a
+  signed-in user (or the scheduler's secret), and errors shown to users never
+  include internal details.
 - **iPhone:** the login session is stored in the Keychain. The app locks with
   Face ID or your passcode after a minute in the background.
 - Passwords must be at least 10 characters.
@@ -109,11 +109,8 @@ marked `noindex` so search engines skip it.
 1. At vercel.com, sign in with GitHub, choose **Add New → Project** and import
    `budgetapp`. Keep the detected settings and click **Deploy**.
 2. Copy the site address, e.g. `https://budgetapp-abc.vercel.app`.
-3. In Supabase:
-   - **Edge Functions → Secrets:** add `ALLOWED_ORIGINS` with that address
-     (comma-separate several). Without it, connecting banks and syncing from
-     the website are refused.
-   - **Authentication → URL Configuration:** set **Site URL** to the address.
+3. In Supabase, **Authentication → URL Configuration:** set **Site URL** to
+   that address.
 
 Every push to `main` redeploys the site automatically.
 

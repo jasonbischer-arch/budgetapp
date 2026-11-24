@@ -2,25 +2,16 @@
 // (The Plaid functions use the equivalents in sync.ts.)
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
 
-const DEFAULT_ORIGINS = ["http://localhost:8081", "http://127.0.0.1:8081"];
-
-function allowedOrigins() {
-  const extra = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
-    .split(",")
-    .map((o) => o.trim())
-    .filter(Boolean);
-  return new Set([...DEFAULT_ORIGINS, ...extra]);
-}
-
-export function corsHeaders(req: Request): Record<string, string> {
-  const origin = req.headers.get("Origin");
-  const headers: Record<string, string> = {
+// Any website may *send* requests, because that isn't what protects data:
+// every function requires the user's sign-in token (sent as a header, never
+// a cookie), so another site can't act as a signed-in user. This matches
+// Supabase's recommended setup and works on every Vercel preview address.
+export function corsHeaders(_req: Request): Record<string, string> {
+  return {
+    "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    Vary: "Origin",
   };
-  if (origin && allowedOrigins().has(origin)) headers["Access-Control-Allow-Origin"] = origin;
-  return headers;
 }
 
 export function json(req: Request, body: unknown, status = 200) {
