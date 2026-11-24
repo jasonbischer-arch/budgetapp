@@ -16,6 +16,7 @@ import {
   fetchLiabilities,
   Liability,
   saveBill,
+  countBillPayments,
 } from '@/lib/data';
 import { currentBalance, payoff } from '@/lib/debt';
 import { money, ordinal, shortDate } from '@/lib/format';
@@ -52,7 +53,7 @@ const parseNum = (s: string) => {
 
 export default function BillEditor() {
   const c = useTheme();
-  const { id, accountId, debt, type, name: prefillName, amount: prefillAmount, day: prefillDay, categoryId } =
+  const { id, accountId, debt, type, name: prefillName, amount: prefillAmount, day: prefillDay, categoryId, matchKey } =
     useLocalSearchParams<{
       id: string;
       accountId?: string;
@@ -63,6 +64,7 @@ export default function BillEditor() {
       amount?: string;
       day?: string;
       categoryId?: string;
+      matchKey?: string;
     }>();
   const isNew = id === 'new';
   const { household } = useAuth();
@@ -82,6 +84,7 @@ export default function BillEditor() {
   const [apr, setApr] = useState('');
   const [linked, setLinked] = useState<string | null>(accountId ?? null);
   const [saving, setSaving] = useState(false);
+  const [linkedPayments, setLinkedPayments] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -93,6 +96,7 @@ export default function BillEditor() {
         const b = bills.find((x) => x.id === id);
         if (!b) return setError('Not found');
         setExisting(b);
+        countBillPayments(b.id).then(setLinkedPayments).catch(() => {});
         setKind(b.is_debt ? 'debt' : 'bill');
         setDebtKind(b.debt_kind);
         setExpenseType(b.expense_type ?? 'fixed');
@@ -180,6 +184,8 @@ export default function BillEditor() {
         account_id: isDebt ? linked : null,
         category_id: existing?.category_id ?? categoryId ?? null,
         expense_type: expenseType,
+        // Picked from your payments: link that payee's payments to this bill.
+        ...(isNew && matchKey ? { match_key: matchKey } : {}),
       });
       router.back();
     } catch (e) {
@@ -223,6 +229,13 @@ export default function BillEditor() {
 
   return (
     <Screen>
+      {existing && linkedPayments != null && (
+        <T variant="small">
+          {linkedPayments > 0
+            ? `🔗 ${linkedPayments} payment${linkedPayments === 1 ? '' : 's'} from your bank belong to this bill. They count here only, not again in a spending category.`
+            : '🔗 No bank payments matched yet. Until they do, this bill’s amount is taken out of its category so it isn’t counted twice.'}
+        </T>
+      )}
       {existing?.detection_key && (
         <Card style={{ padding: Spacing.md, backgroundColor: c.primarySoft, borderColor: c.primarySoft }}>
           <T style={{ fontWeight: '600' }}>

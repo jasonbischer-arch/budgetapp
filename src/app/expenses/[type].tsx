@@ -120,7 +120,10 @@ export default function ExpensesSheet() {
               title="Transactions"
               kind="secondary"
               onPress={() =>
-                router.push({ pathname: '/category/[id]', params: { id: item.id ?? 'none', months: '12' } })
+                router.push({
+                  pathname: '/category/[id]',
+                  params: { id: item.id ?? 'none', months: '12', withoutBills: '1' },
+                })
               }
             />
           )}

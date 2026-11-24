@@ -84,6 +84,8 @@ export interface PlaidTransaction {
   name: string;
   merchant_name?: string | null;
   pending: boolean;
+  /** On a posted transaction: the id of the pending one it replaces. */
+  pending_transaction_id?: string | null;
   personal_finance_category?: { primary: string; detailed: string } | null;
 }
 

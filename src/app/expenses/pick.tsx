@@ -46,6 +46,8 @@ export default function PickExpense() {
         amount: String(p.recurring ? p.typical : p.lastAmount),
         day: String(p.day),
         categoryId: p.categoryId ?? '',
+        // Links this payee's payments to the new bill.
+        matchKey: p.key,
       },
     });
   }

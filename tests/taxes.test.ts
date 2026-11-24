@@ -79,3 +79,27 @@ assert(near(moved.fixed.total, 0) && near(moved.variable.total, 150 + 60 + 800),
   if (!w || w.recurring) throw new Error("FAIL: a store visited weekly isn't a bill");
   console.log("ok - payees to add: recurring first, typical amount and day, bills and refunds left out");
 }
+
+// --- No double counting: bill payments count as the bill only -----------------
+{
+  const { expenseBreakdown: eb, cutSuggestions: cs, payeeKey: pk } = await import("../src/lib/insights.ts");
+  const health = [{ id: "health", name: "Health", kind: "expense" as const, expense_type: "variable" as const, provider_categories: ["MEDICAL"], monthly_budget: null }];
+  const m = new Set(["2026-10-01", "2026-09-01"]);
+  const r = [];
+  for (const month of m) {
+    r.push({ month, flow: "spending" as const, category_id: "health", bill_id: "gok", total: -348.75 });
+    r.push({ month, flow: "spending" as const, category_id: "health", bill_id: null, total: -120 });
+  }
+  const out = eb(r, health, m, [{ id: "gok", name: "Gokadar", monthly: 348.75, category_id: "health", expense_type: "fixed" }]);
+  assert(near(out.fixed.total, 348.75), "Gokadar counts once, as the fixed bill");
+  assert(near(out.variable.total, 120), "Health shows only its other spending: " + out.variable.total);
+  assert(near(out.fixed.total + out.variable.total, 468.75), "fixed + variable = everything spent, once");
+
+  // A bill with no matched payments falls back to subtracting its amount.
+  const r2 = [...m].map((month) => ({ month, flow: "spending" as const, category_id: "health", bill_id: null, total: -468.75 }));
+  const out2 = eb(r2, health, m, [{ id: "x", name: "Doctor plan", monthly: 348.75, category_id: "health", expense_type: "fixed" }]);
+  assert(near(out2.variable.total, 120), "unmatched bill: its amount comes out of the category instead");
+
+  assert(pk(null, "ALLY ALLY PAYMT 228358152146 WEB ID: 9833122002") === "ALLY ALLY PAYMT", "payee key matches the database's rules");
+  assert(cs(r, health, new Date(2026, 10, 15)).length === 0, "bill payments aren't suggested as cuts");
+}

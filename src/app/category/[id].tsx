@@ -22,7 +22,9 @@ const PERIODS: { value: Period; label: string }[] = [
 
 export default function CategoryTransactions() {
   const c = useTheme();
-  const params = useLocalSearchParams<{ id: string; months?: string }>();
+  const params = useLocalSearchParams<{ id: string; months?: string; withoutBills?: string }>();
+  // From the variable expenses list: bill payments are counted as bills there.
+  const withoutBills = params.withoutBills === '1';
   const categoryId = params.id === 'none' ? null : params.id;
   const [period, setPeriod] = useState<Period>(
     (['1', '3', '6', '12'] as const).find((p) => p === params.months) ?? '1',
@@ -37,12 +39,13 @@ export default function CategoryTransactions() {
           categoryId,
           from: monthStart(now, -(Number(period) - 1)),
           to: monthStart(now, 1),
+          withoutBills,
         }),
       ]);
       return { category: categories.find((x) => x.id === categoryId) ?? null, rows };
     },
     { category: null, rows: [] },
-    `${categoryId}:${period}`,
+    `${categoryId}:${period}:${withoutBills}`,
   );
 
   const cat = data.category;
@@ -121,7 +124,10 @@ export default function CategoryTransactions() {
         );
       })}
       {data.rows.length > 0 && (
-        <T variant="small">Tap a transaction to change its category or exclude it.</T>
+        <T variant="small">
+          Tap a transaction to change its category or exclude it.
+          {withoutBills ? ' Payments that belong to a bill are listed with that bill, not here.' : ''}
+        </T>
       )}
     </Screen>
   );

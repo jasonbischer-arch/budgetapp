@@ -286,6 +286,8 @@ export async function syncItem(
         status: t.pending ? "pending" : "posted",
         category_primary: t.personal_finance_category?.primary ?? null,
         category_detailed: t.personal_finance_category?.detailed ?? null,
+        // Lets the totals ignore a pending copy once the posted one arrives.
+        pending_transaction_id: t.pending_transaction_id ?? null,
         updated_at: now,
       }));
     // Upsert only Plaid-owned columns, so categories/notes you set are kept.
@@ -446,7 +448,7 @@ export async function detectBillsForHousehold(admin: SupabaseClient, householdId
 
   const { data: existing } = await admin
     .from("bills")
-    .select("id, auto, dismissed, detection_key, account_id, amount, due_day")
+    .select("id, auto, dismissed, detection_key, account_id, amount, due_day, match_key")
     .eq("household_id", householdId);
   const bills = existing ?? [];
   const { data: liabilities } = await admin
@@ -471,6 +473,9 @@ export async function detectBillsForHousehold(admin: SupabaseClient, householdId
       continue;
     }
     if (!b.active) continue;
+    // Already a bill for this payee (e.g. one you added from your payments)?
+    const payee = b.key.replace(/#\d+$/, "");
+    if (!/#\d+$/.test(b.key) && bills.some((x) => !x.dismissed && x.match_key === payee)) continue;
     // Already entered by hand? (similar amount, due within 3 days)
     const covered = bills.some((x) =>
       !x.detection_key && !x.dismissed && x.amount != null &&

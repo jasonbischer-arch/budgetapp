@@ -10,7 +10,7 @@ import {
   serve,
   syncItem,
 } from "../_shared/sync.ts";
-import { plaid, PlaidError } from "../_shared/plaid.ts";
+import { plaid, PlaidAccount, PlaidError } from "../_shared/plaid.ts";
 
 interface ExchangeBody {
   publicToken?: unknown;
@@ -39,6 +39,27 @@ serve(async (req) => {
       throw new HttpError(400, "Plaid didn't accept this bank connection. Please try again.");
     }
     throw e;
+  }
+
+  // The same bank connected twice would count every transaction twice:
+  // if these accounts are already connected, undo this connection.
+  const { accounts: newAccounts } = await plaid<{ accounts: PlaidAccount[] }>("/accounts/get", {
+    access_token: exchanged.access_token,
+  });
+  const { data: others } = await admin
+    .from("accounts")
+    .select("item_id, institution_name, type, subtype, last_four")
+    .eq("household_id", householdId)
+    .neq("item_id", exchanged.item_id);
+  const alreadyConnected = newAccounts.length > 0 && newAccounts.every((a) =>
+    (others ?? []).some((o) =>
+      a.mask && o.last_four === a.mask && o.type === a.type && (o.subtype ?? "") === (a.subtype ?? "") &&
+      (o.institution_name ?? null) === institutionName
+    )
+  );
+  if (alreadyConnected) {
+    await plaid("/item/remove", { access_token: exchanged.access_token }).catch(() => {});
+    throw new HttpError(409, `${institutionName ?? "This bank"} is already connected. Use Reconnect on it instead.`);
   }
 
   const { data: existing } = await admin

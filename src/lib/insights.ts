@@ -6,6 +6,8 @@ export interface FlowRowLike {
   month: string; // YYYY-MM-01
   flow: 'income' | 'spending' | 'refund' | 'saved';
   category_id: string | null;
+  /** Payments that belong to a bill: counted as the bill, never again in a category. */
+  bill_id?: string | null;
   total: number; // signed: spending/saved negative, income/refund positive
 }
 
@@ -91,6 +93,9 @@ function nextMonth(date: string) {
   return m === 12 ? `${y + 1}-01-01` : `${y}-${pad(m + 1)}-01`;
 }
 
+/** Rows without bill payments: what's left for categories once bills are counted. */
+export const withoutBills = <R extends FlowRowLike>(rows: R[]) => rows.filter((r) => !r.bill_id);
+
 /** Net spending per category (refunds subtracted) over a set of months. */
 export function spendingByCategory(rows: FlowRowLike[], months: Set<string>) {
   const byCat = new Map<string | null, number>();
@@ -167,17 +172,23 @@ export function expenseBreakdown(
   months: Set<string>,
   bills: BillLike[],
 ) {
-  const avg = categoryAverages(rows, months);
-  const billsByCat = new Map<string | null, number>();
+  // Payments linked to a bill count as that bill only.
+  const avg = categoryAverages(withoutBills(rows), months);
+  const linked = new Set(rows.filter((r) => r.bill_id && months.has(r.month)).map((r) => r.bill_id));
+  // A bill with no matched payments (e.g. named differently from the
+  // payee): fall back to taking its amount out of its category.
+  const estimatedByCat = new Map<string | null, number>();
   for (const b of bills) {
-    if (b.category_id) billsByCat.set(b.category_id, (billsByCat.get(b.category_id) ?? 0) + b.monthly);
+    if (b.category_id && !linked.has(b.id)) {
+      estimatedByCat.set(b.category_id, (estimatedByCat.get(b.category_id) ?? 0) + b.monthly);
+    }
   }
   const side = { fixed: [] as ExpenseItem[], variable: [] as ExpenseItem[] };
   for (const b of bills) {
     if (b.monthly > 0) side[b.expense_type].push({ kind: 'bill', id: b.id, name: b.name, monthly: b.monthly });
   }
   for (const [id, amount] of avg) {
-    const rest = amount - (id ? (billsByCat.get(id) ?? 0) : 0);
+    const rest = amount - (id ? (estimatedByCat.get(id) ?? 0) : 0);
     if (rest < 1) continue;
     const cat = id ? categories.find((c) => c.id === id) : undefined;
     if (cat?.expense_type === 'fixed') continue; // fixed = your bills only
@@ -249,6 +260,7 @@ export function cutSuggestions(
 ): CutSuggestion[] {
   const months = [...trailingMonths(now, firstDate)];
   if (months.length < 3) return [];
+  rows = withoutBills(rows); // a bill isn't everyday spending to cut
   const out: CutSuggestion[] = [];
   for (const cat of categories) {
     if (cat.kind !== 'expense' || cat.expense_type === 'fixed') continue;
@@ -318,22 +330,25 @@ export function paycheckSplit(opts: {
 // Payees you could add as bills
 // ---------------------------------------------------------------------------
 
-/** Bank-statement filler that doesn't identify who was paid. */
+/** Bank-statement filler that doesn't identify who was paid (same list as the database's payee_key). */
 const PAYEE_NOISE = new Set([
-  'ACH', 'PPD', 'CCD', 'ID', 'DES', 'INDN', 'CO', 'DIRECT', 'DIR', 'DEP', 'DEBIT', 'PURCHASE', 'POS',
-  'ELECTRONIC', 'ELEC', 'TRANSFER', 'WEB', 'ONLINE', 'PAYMENT', 'PMT', 'FROM', 'TO', 'THE', 'INC',
+  'ACH', 'PPD', 'CCD', 'ID', 'DES', 'INDN', 'CO', 'DIRECT', 'DIR', 'DEP', 'DEPOSIT', 'CREDIT',
+  'ELECTRONIC', 'ELEC', 'TRANSFER', 'WEB', 'ONLINE', 'PAYMENT', 'PMT', 'FROM', 'THE', 'INC',
   'LLC', 'CORP', 'CORPORATION', 'COMPANY', 'LTD', 'NA', 'TRN', 'REF', 'ORIG', 'NAME', 'ENTRY',
-  'DESCR', 'SEC', 'IND', 'TRACE', 'EFF', 'DATE', 'RECURRING', 'AUTOPAY', 'BILL', 'PAY', 'CARD',
+  'DESCR', 'SEC', 'IND', 'TRACE', 'EFF', 'DATE',
 ]);
 
-/** A stable key for who was paid, e.g. "ALLY" from "ALLY PAYMENT ID 123". */
+/**
+ * Who was paid, normalized, e.g. "ALLY" from "ALLY PAYMENT ID 123". Must
+ * match public.payee_key() in the database, which links payments to bills.
+ */
 export function payeeKey(merchant: string | null, description: string): string {
   return (merchant?.trim() || description)
     .toUpperCase()
     .replace(/[^A-Z ]+/g, ' ')
     .split(/\s+/)
     .filter((w) => w.length >= 2 && !PAYEE_NOISE.has(w))
-    .slice(0, 3)
+    .slice(0, 4)
     .join(' ');
 }
 
@@ -357,8 +372,9 @@ export interface PayeeGroup {
 const titleWords = (s: string) => s.toLowerCase().replace(/\b[a-z]/g, (ch) => ch.toUpperCase());
 
 /** True if a bill already covers this payee (same name or detected from it). */
-function coveredByBill(key: string, bills: { name: string; detection_key: string | null }[]) {
+function coveredByBill(key: string, bills: { name: string; detection_key: string | null; match_key?: string | null }[]) {
   return bills.some((b) => {
+    if (b.match_key && b.match_key === key) return true;
     if (b.detection_key && b.detection_key.replace(/#\d+$/, '') === key) return true;
     const bk = payeeKey(null, b.name);
     if (!bk) return false;
@@ -374,7 +390,7 @@ function coveredByBill(key: string, bills: { name: string; detection_key: string
  */
 export function payeesToAdd(
   rows: { date: string; amount: number; description: string; merchant: string | null; category_id: string | null }[],
-  bills: { name: string; detection_key: string | null }[],
+  bills: { name: string; detection_key: string | null; match_key?: string | null }[],
 ): PayeeGroup[] {
   const groups = new Map<string, typeof rows>();
   for (const r of rows) {

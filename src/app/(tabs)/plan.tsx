@@ -52,6 +52,7 @@ import {
   periodMonths,
   spendingByCategory,
   trailingMonths,
+  withoutBills,
 } from '@/lib/insights';
 import {
   addDays,
@@ -122,7 +123,7 @@ function usePlan(data: HouseholdData, savingsOverride: number | null) {
 
     // Variable spending per month: your budgets where set, else the average.
     const months = trailingMonths(new Date(), data.firstDate);
-    const avg = categoryAverages(data.flows, months);
+    const avg = categoryAverages(withoutBills(data.flows), months);
     const variablePerMonth = data.categories
       .filter((c) => c.kind === 'expense' && c.expense_type === 'variable')
       .reduce((s, c) => s + (c.monthly_budget ?? avg.get(c.id) ?? 0), 0);
@@ -748,7 +749,7 @@ function BudgetView({ data, reload }: { data: HouseholdData; reload: () => void 
   const now = useMemo(() => new Date(), []);
 
   const months = trailingMonths(now, data.firstDate);
-  const avg = categoryAverages(data.flows, months);
+  const avg = categoryAverages(withoutBills(data.flows), months);
   const split = expenseBreakdown(
     data.flows,
     data.categories,

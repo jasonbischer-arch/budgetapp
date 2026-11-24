@@ -143,10 +143,14 @@ export interface Bill {
   debt_kind: 'auto_loan' | 'mortgage' | 'student_loan' | 'personal_loan' | 'other' | null;
   /** Counted with fixed or variable expenses on the Overview. */
   expense_type: 'fixed' | 'variable';
+  /** Who it's paid to: payments to this payee belong to this bill. */
+  match_key: string | null;
 }
 
 /** The fields you edit on a bill. */
-export type BillInput = Omit<Bill, 'id' | 'auto' | 'detection_key' | 'last_paid' | 'occurrences'>;
+export type BillInput = Omit<Bill, 'id' | 'auto' | 'detection_key' | 'last_paid' | 'occurrences' | 'match_key'> & {
+  match_key?: string | null;
+};
 
 export interface Liability {
   account_id: string;
@@ -162,6 +166,8 @@ export interface FlowRow {
   month: string;
   flow: Flow;
   category_id: string | null;
+  /** Set when these payments belong to a bill (counted as the bill, not the category). */
+  bill_id: string | null;
   total: number;
   n: number;
 }
@@ -356,6 +362,16 @@ export async function fetchBills(): Promise<Bill[]> {
   return rows.map((r) => ({ ...r, amount: num(r.amount), balance: num(r.balance), apr: num(r.apr) }));
 }
 
+/** How many payments are linked to a bill (they count as the bill only). */
+export async function countBillPayments(billId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('transactions')
+    .select('id', { count: 'exact', head: true })
+    .eq('bill_id', billId);
+  if (error) throw new Error(error.message);
+  return count ?? 0;
+}
+
 /** Saves a bill. Editing a detected bill makes it yours (detection stops changing it). */
 export async function saveBill(householdId: string, bill: BillInput & { id?: string }) {
   const { id, ...fields } = bill;
@@ -443,7 +459,13 @@ export async function saveTaxSettings(householdId: string, tax_state: string | n
 }
 
 /** Spending and refunds in a category (null = uncategorized) between dates. */
-export async function fetchCategoryTransactions(opts: { categoryId: string | null; from: string; to: string }) {
+export async function fetchCategoryTransactions(opts: {
+  categoryId: string | null;
+  from: string;
+  to: string;
+  /** Leave out payments that belong to a bill. */
+  withoutBills?: boolean;
+}) {
   let q = supabase
     .from('transaction_flows')
     .select('id, date, description, merchant, amount, flow, account_id')
@@ -453,6 +475,7 @@ export async function fetchCategoryTransactions(opts: { categoryId: string | nul
     .order('date', { ascending: false })
     .limit(1000);
   q = opts.categoryId ? q.eq('category_id', opts.categoryId) : q.is('category_id', null);
+  if (opts.withoutBills) q = q.is('bill_id', null);
   const rows = unwrap(await q) as {
     id: string;
     date: string;
@@ -499,7 +522,7 @@ export async function fetchLiabilities(): Promise<Liability[]> {
 
 /** Monthly totals per flow and category since a date. */
 export async function fetchMonthlyFlows(from: string): Promise<FlowRow[]> {
-  const rows = unwrap(await supabase.rpc('monthly_flows', { p_from: from })) as FlowRow[];
+  const rows = unwrap(await supabase.rpc('monthly_flows_by_bill', { p_from: from })) as FlowRow[];
   return rows.map((r) => ({ ...r, total: Number(r.total), n: Number(r.n) }));
 }
 
