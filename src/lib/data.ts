@@ -14,6 +14,12 @@ export interface Account {
   balance_ledger: number | null;
   hidden: boolean;
   item_id: string;
+  /** Your name for it in net worth (the bank's name otherwise). */
+  nickname: string | null;
+  /** Left out of net worth (budgets and transactions still count it). */
+  net_worth_excluded: boolean;
+  /** Net worth group you moved it to (e.g. 'other'); null = automatic. */
+  net_worth_kind: string | null;
 }
 
 export interface BankItem {
@@ -301,6 +307,14 @@ export async function saveSavingsPerCheck(householdId: string, value: number | n
 
 export async function rotateInviteCode(): Promise<string> {
   return unwrap(await supabase.rpc('rotate_invite_code')) as string;
+}
+
+/** How a connected account shows in net worth. */
+export async function updateAccountNetWorth(
+  id: string,
+  patch: Partial<Pick<Account, 'nickname' | 'net_worth_excluded' | 'net_worth_kind'>>,
+) {
+  unwrap(await supabase.from('accounts').update(patch).eq('id', id));
 }
 
 export async function setAccountHidden(id: string, hidden: boolean) {

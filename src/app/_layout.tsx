@@ -61,6 +61,10 @@ function RootNavigator() {
             options={{ presentation: 'modal', headerShown: true, title: 'Expenses' }}
           />
           <Stack.Screen
+            name="networth-account/[id]"
+            options={{ presentation: 'modal', headerShown: true, title: 'Net worth item' }}
+          />
+          <Stack.Screen
             name="plan-bill/[id]"
             options={{ presentation: 'modal', headerShown: true, title: 'Pay this bill from…' }}
           />

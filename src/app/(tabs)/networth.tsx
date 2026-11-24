@@ -19,12 +19,15 @@ import {
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
+  Account,
+  fetchAccounts,
   fetchManualAssets,
   fetchNetWorthHistory,
   fetchNetWorthItems,
   ManualAsset,
   NetWorthItem,
   NetWorthPoint,
+  updateAccountNetWorth,
   useQuery,
 } from '@/lib/data';
 import { money, moneyWhole } from '@/lib/format';
@@ -51,20 +54,22 @@ interface Data {
   items: NetWorthItem[];
   history: NetWorthPoint[];
   assets: ManualAsset[];
+  accounts: Account[];
 }
 
 export default function NetWorth() {
   const c = useTheme();
   const { data, loading, error, reload } = useQuery<Data>(
     async () => {
-      const [items, history, assets] = await Promise.all([
+      const [items, history, assets, accounts] = await Promise.all([
         fetchNetWorthItems(),
         fetchNetWorthHistory(),
         fetchManualAssets(),
+        fetchAccounts(),
       ]);
-      return { items, history, assets };
+      return { items, history, assets, accounts };
     },
-    { items: [], history: [], assets: [] },
+    { items: [], history: [], assets: [], accounts: [] },
   );
 
   const assets = data.items.filter((i) => i.section === 'asset');
@@ -86,6 +91,9 @@ export default function NetWorth() {
 
   const debtRatio = totalAssets > 0 ? totalDebts / totalAssets : null;
   const manualById = new Map(data.assets.map((a) => [a.id, a]));
+  const excluded = data.accounts.filter(
+    (a) => a.net_worth_excluded && !a.hidden && ['depository', 'investment', 'credit', 'loan'].includes(a.type),
+  );
 
   return (
     <Screen refreshing={loading} onRefresh={reload}>
@@ -171,6 +179,7 @@ export default function NetWorth() {
           kind="secondary"
           onPress={() => router.push('/asset/new')}
         />
+        <T variant="small">Tap any item to edit or remove it.</T>
       </Card>
 
       <SectionHeader title="What you owe" action="+ Add" onAction={() => router.push({ pathname: '/bill/[id]', params: { id: 'new', debt: '1' } })} />
@@ -187,9 +196,30 @@ export default function NetWorth() {
         />
         <T variant="small">
           Connected cards and loans update with each bank sync. Debts you add pay down every month
-          from their payment and interest rate.
+          from their payment and interest rate. Tap any item to edit or remove it.
         </T>
       </Card>
+
+      {excluded.length > 0 && (
+        <>
+          <SectionHeader title="Not counted" />
+          <Card>
+            <T variant="small">Left out of net worth. Their transactions still count in your budgets.</T>
+            {excluded.map((a) => (
+              <Row key={a.id} style={{ justifyContent: 'space-between', gap: Spacing.sm }}>
+                <T variant="muted" numberOfLines={1} style={{ flexShrink: 1 }}>
+                  {a.nickname || `${a.name}${a.last_four ? ` ••${a.last_four}` : ''}`}
+                </T>
+                <Button
+                  title="Add back"
+                  kind="secondary"
+                  onPress={() => updateAccountNetWorth(a.id, { net_worth_excluded: false }).then(reload)}
+                />
+              </Row>
+            ))}
+          </Card>
+        </>
+      )}
 
       {debtRatio != null && (
         <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
@@ -258,35 +288,34 @@ function Group({
         .sort((a, b) => b.amount - a.amount)
         .map((i) => {
           const manual = i.source === 'manual' ? manualById.get(i.ref_id) : undefined;
-          // Manual debts open their bill; manual assets open the asset editor.
+          // Every item opens its editor: your assets and debts open theirs (with
+          // Delete); connected accounts open their net worth settings.
           const isDebtItem = i.section === 'liability' && i.source === 'manual';
-          const row = (
-            <Row style={{ justifyContent: 'space-between', paddingLeft: 38 }}>
-              <Row style={{ gap: 6, flexShrink: 1 }}>
-                <T variant="muted" numberOfLines={1} style={{ flexShrink: 1 }}>
-                  {i.name}
-                </T>
-                {i.source === 'manual' && (
-                  <Badge
-                    text={manual?.value_error ? 'CHECK' : manual?.auto_value ? 'AUTO' : manual ? 'ESTIMATE' : '↓ MONTHLY'}
-                    tone={manual?.value_error ? 'warning' : manual?.auto_value ? 'primary' : 'neutral'}
-                  />
-                )}
-              </Row>
-              <T variant="muted">{money(i.amount)}</T>
-            </Row>
-          );
-          return manual || isDebtItem ? (
+          const pathname = i.source === 'bank' ? '/networth-account/[id]' : isDebtItem ? '/bill/[id]' : '/asset/[id]';
+          return (
             <Pressable
               key={i.ref_id}
-              onPress={() =>
-                router.push({ pathname: isDebtItem ? '/bill/[id]' : '/asset/[id]', params: { id: i.ref_id } })
-              }
+              accessibilityRole="button"
+              accessibilityLabel={`Edit ${i.name}, ${money(i.amount)}`}
+              onPress={() => router.push({ pathname, params: { id: i.ref_id } })}
               style={({ pressed }) => pressed && { opacity: 0.6 }}>
-              {row}
+              <Row style={{ justifyContent: 'space-between', paddingLeft: 38 }}>
+                <Row style={{ gap: 6, flexShrink: 1 }}>
+                  <T variant="muted" numberOfLines={1} style={{ flexShrink: 1 }}>
+                    {i.name}
+                  </T>
+                  {i.source === 'manual' && (
+                    <Badge
+                      text={manual?.value_error ? 'CHECK' : manual?.auto_value ? 'AUTO' : manual ? 'ESTIMATE' : '↓ MONTHLY'}
+                      tone={manual?.value_error ? 'warning' : manual?.auto_value ? 'primary' : 'neutral'}
+                    />
+                  )}
+                </Row>
+                <T variant="muted">
+                  {money(i.amount)} <T variant="small">✎</T>
+                </T>
+              </Row>
             </Pressable>
-          ) : (
-            <View key={i.ref_id}>{row}</View>
           );
         })}
       <Divider />
