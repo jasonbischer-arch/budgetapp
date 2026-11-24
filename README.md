@@ -24,6 +24,7 @@ Supabase: Postgres + Auth + Edge Functions + Vault
    │  plaid-exchange    trades Link's one-time token for an access token
    │  plaid-sync        balances + transactions (button, and daily at 11:17 UTC)
    │  plaid-disconnect  revokes access at Plaid, then deletes the bank's data
+   │  plaid-webhook     Plaid says new data is ready (e.g. older history) → sync
    ▼
 Plaid API ──► your banks
 ```

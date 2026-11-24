@@ -10,6 +10,7 @@ import {
   requireHousehold,
   requireItem,
   serve,
+  webhookUrl,
 } from "../_shared/sync.ts";
 import { plaid, PlaidError } from "../_shared/plaid.ts";
 
@@ -48,7 +49,13 @@ serve(async (req) => {
     );
   } else {
     result = await createLinkToken(
-      { ...base, products: ["transactions"], transactions: { days_requested: 730 } },
+      {
+        ...base,
+        products: ["transactions"],
+        transactions: { days_requested: 730 },
+        // Plaid calls this when more history or new transactions are ready.
+        webhook: webhookUrl(),
+      },
       // Card APRs, minimum payments and due dates, when the bank supports it.
       { optional_products: ["liabilities"] },
     );

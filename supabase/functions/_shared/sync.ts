@@ -109,6 +109,11 @@ export async function requireItem(admin: SupabaseClient, itemId: unknown, househ
   return item as { id: string; household_id: string };
 }
 
+/** Where Plaid sends webhooks for this project. */
+export function webhookUrl() {
+  return `${Deno.env.get("SUPABASE_URL")}/functions/v1/plaid-webhook`;
+}
+
 /** Decrypts an item's Plaid access token from Vault (service role only). */
 export async function getToken(admin: SupabaseClient, itemId: string) {
   const { data, error } = await admin.rpc("get_item_token", { p_item_id: itemId });
@@ -218,9 +223,19 @@ export async function syncItem(
   try {
     const { data: item } = await admin
       .from("bank_items")
-      .select("institution_name, sync_cursor")
+      .select("institution_name, sync_cursor, webhook_registered")
       .eq("id", itemId)
       .single();
+
+    // Banks connected before webhooks existed: tell Plaid where to send them.
+    if (item && !item.webhook_registered) {
+      try {
+        await plaid("/item/webhook/update", { access_token: token, webhook: webhookUrl() });
+        await admin.from("bank_items").update({ webhook_registered: true }).eq("id", itemId);
+      } catch (e) {
+        console.warn("webhook registration failed:", e instanceof PlaidError ? e.code : e);
+      }
+    }
 
     // Balances: /accounts/get returns Plaid's cached balances (no extra fee).
     const { accounts } = await plaid<{ accounts: PlaidAccount[] }>("/accounts/get", {

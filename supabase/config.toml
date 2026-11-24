@@ -21,3 +21,7 @@ verify_jwt = false
 
 [functions.home-values]
 verify_jwt = false
+
+# Called by Plaid, not users: verified with Plaid's signature instead.
+[functions.plaid-webhook]
+verify_jwt = false
