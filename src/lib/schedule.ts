@@ -173,7 +173,7 @@ export function monthlyAmount(
 // Paycheck plan
 // ---------------------------------------------------------------------------
 
-/** The part of a bill paid from one check (the whole bill unless split). */
+/** A bill paid from one check: the whole bill, unless it's bigger than the check (`split`). */
 export interface PlannedBill extends Occurrence {
   fullAmount: number;
   split: boolean;
@@ -226,6 +226,8 @@ export interface PlannedCheck extends Occurrence {
 
 export interface PaycheckPlan {
   checks: PlannedCheck[];
+  /** Small deposits (e.g. a $116 side payment) not used to pay bills. */
+  smallIncome: Occurrence[];
   /** Bills due before any upcoming paycheck can cover them: pay from cash. */
   fromCash: Occurrence[];
   /** The average left per check. */
@@ -234,21 +236,19 @@ export interface PaycheckPlan {
 
 /** How early a bill may be paid: from a paycheck at most this many days before it's due. */
 const PAY_WINDOW_DAYS = 31;
-/** Bills this big may be split across checks (set aside part from each). */
-const SPLIT_MIN = 300;
-/** Leftovers within this many dollars count as even. */
-const TOLERANCE = 10;
-/** Split pieces smaller than this are folded back into the rest of the bill. */
-const MIN_PIECE = 50;
 
 /**
- * Assigns each bill to paychecks that arrive on or before its due date (and
- * within a month of it), so every check keeps about the same amount.
+ * Divides your fixed bills across your paychecks so every check is left with
+ * as close to the same amount as possible. Each bill is paid in full from a
+ * single check that arrives on or before its due date (and within a month of
+ * it). The only exception: a bill bigger than the check paying it, where the
+ * shortfall is set aside from an earlier check.
  *
  * 1. Largest bill first, each onto the eligible check with the most left.
- * 2. Move whole bills between checks while that evens things out.
- * 3. Big bills (rent, car...) may then be split: part set aside from an
- *    earlier check, the rest from a later one. Small bills stay whole.
+ * 2. Then keep improving: move a bill to another eligible check, or swap two
+ *    bills between checks, whenever that makes the leftovers more even.
+ *    "More even" = a smaller sum of squared leftovers, which for a fixed
+ *    total is the same as the smallest spread. Stops when nothing helps.
  */
 export function buildPaycheckPlan(
   incomes: PaySchedule[],
@@ -257,115 +257,137 @@ export function buildPaycheckPlan(
   to: ISODate,
   edits: IncomeEdit[] = [],
 ): PaycheckPlan {
-  const checks: PlannedCheck[] = applyIncomeEdits(
-    incomes.flatMap((s) => paydays(s, from, to)),
-    edits,
-    from,
-    to,
-  )
-    .sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name))
+  const all = applyIncomeEdits(incomes.flatMap((s) => paydays(s, from, to)), edits, from, to).sort(
+    (a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name),
+  );
+  // Real paychecks only: a deposit under a fifth of your typical check (a
+  // small side payment) isn't one of the checks bills are divided across.
+  const sorted = all.map((c) => c.amount).sort((a, b) => a - b);
+  const typical = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+  const isSmall = (c: Occurrence) => c.amount < 0.2 * typical;
+  const smallIncome = all.filter(isSmall);
+  const checks: PlannedCheck[] = all
+    .filter((c) => !isSmall(c))
     .map((c) => ({ ...c, bills: [], billsTotal: 0, leftover: c.amount }));
 
-  // Bills slightly past the horizon can still be paid by its last checks.
+  // Bills due after the plan ends belong to the next plan, unless they're
+  // due before the next paycheck after it (then only these checks can pay).
+  const nextPayday = incomes
+    .flatMap((s) => paydays(s, addDays(to, 1), addDays(to, PAY_WINDOW_DAYS)))
+    .filter((c) => !(c.amount < 0.2 * typical))
+    .map((c) => c.date)
+    .sort()[0];
   const billOccurrences = bills
     .flatMap((b) => dueDates(b, from, addDays(to, PAY_WINDOW_DAYS)))
-    .filter((b) => b.amount > 0);
+    .filter((b) => b.amount > 0)
+    .filter((b) => b.date <= to || (nextPayday ? b.date < nextPayday : true));
 
   const fromCash: Occurrence[] = [];
-  const allocs: { bill: Occurrence; options: PlannedCheck[]; parts: Map<PlannedCheck, number> }[] = [];
+  const allocs: { bill: Occurrence; options: PlannedCheck[]; on: PlannedCheck | null }[] = [];
   for (const bill of billOccurrences) {
     const options = checks.filter(
       (c) => c.date <= bill.date && daysBetween(c.date, bill.date) < PAY_WINDOW_DAYS,
     );
-    if (options.length) allocs.push({ bill, options, parts: new Map() });
+    if (options.length) allocs.push({ bill, options, on: null });
     else if (bill.date <= to) fromCash.push(bill);
     // Otherwise it's due after this window and belongs to the next plan.
   }
 
-  const move = (
-    a: (typeof allocs)[number],
-    fromCheck: PlannedCheck | null,
-    toCheck: PlannedCheck,
-    amount: number,
-  ) => {
-    if (fromCheck) {
-      const left = (a.parts.get(fromCheck) ?? 0) - amount;
-      if (left > 0.004) a.parts.set(fromCheck, left);
-      else a.parts.delete(fromCheck);
-      fromCheck.leftover += amount;
-    }
-    a.parts.set(toCheck, (a.parts.get(toCheck) ?? 0) + amount);
-    toCheck.leftover -= amount;
+  const put = (a: (typeof allocs)[number], check: PlannedCheck) => {
+    if (a.on) a.on.leftover += a.bill.amount;
+    check.leftover -= a.bill.amount;
+    a.on = check;
   };
 
-  // 1. Largest bills first, each onto the eligible check with the most left.
+  // 1. Largest bills first, each onto the eligible check with the most left
+  //    (ties: the later check, closer to the due date).
   allocs.sort((a, b) => b.bill.amount - a.bill.amount);
   for (const a of allocs) {
-    const best = a.options.reduce((x, y) =>
-      y.leftover > x.leftover || (y.leftover === x.leftover && y.date > x.date) ? y : x,
-    );
-    move(a, null, best, a.bill.amount);
+    put(a, a.options.reduce((x, y) => (y.leftover > x.leftover || (y.leftover === x.leftover && y.date > x.date) ? y : x)));
   }
 
-  // 2. Move whole bills while that shrinks the gap between two checks.
-  for (let pass = 0; pass < 50; pass++) {
+  // 2. Improve until nothing does. Moving amount m from check i to j changes
+  //    the sum of squares by 2m(Li - Lj + m); a swap of bills a (on i) and
+  //    b (on j) by 2d(Li - Lj + d) with d = a - b. Negative = more even.
+  const EPS = 0.005;
+  const fixedPieces = new Set<(typeof allocs)[number]>();
+  const improve = () => {
+  for (let pass = 0; pass < 200; pass++) {
     let improved = false;
     for (const a of allocs) {
-      const [current] = [...a.parts.keys()];
-      for (const alt of a.options) {
-        if (alt === current) continue;
-        const before = Math.abs(current.leftover - alt.leftover);
-        const after = Math.abs(current.leftover + a.bill.amount - (alt.leftover - a.bill.amount));
-        if (after < before - 0.005) {
-          move(a, current, alt, a.bill.amount);
-          improved = true;
-          break;
-        }
+      if (fixedPieces.has(a)) continue;
+      const i = a.on!;
+      // Best single move for this bill.
+      let best: PlannedCheck | null = null;
+      let bestGain = -EPS;
+      for (const j of a.options) {
+        if (j === i) continue;
+        const delta = 2 * a.bill.amount * (i.leftover - j.leftover + a.bill.amount);
+        if (delta < bestGain) [best, bestGain] = [j, delta];
+      }
+      if (best) {
+        put(a, best);
+        improved = true;
+        continue;
+      }
+      // Otherwise the best swap with a bill on another check.
+      let swap: (typeof allocs)[number] | null = null;
+      let swapGain = -EPS;
+      for (const b of allocs) {
+        if (fixedPieces.has(b)) continue;
+        const j = b.on!;
+        if (j === i || !a.options.includes(j) || !b.options.includes(i)) continue;
+        const d = a.bill.amount - b.bill.amount;
+        const delta = 2 * d * (i.leftover - j.leftover + d);
+        if (delta < swapGain) [swap, swapGain] = [b, delta];
+      }
+      if (swap) {
+        const j = swap.on!;
+        put(a, j);
+        put(swap, i);
+        improved = true;
       }
     }
     if (!improved) break;
   }
+  };
+  improve();
 
-  // 3. Split big bills: shift whole dollars from a tighter check to a
-  //    roomier eligible one until leftovers are within the tolerance.
-  for (let pass = 0; pass < 500; pass++) {
-    let improved = false;
-    for (const a of allocs) {
-      if (a.bill.amount < SPLIT_MIN) continue;
-      for (const [payer, amount] of [...a.parts]) {
-        for (const alt of a.options) {
-          const gap = alt.leftover - payer.leftover;
-          if (alt === payer || gap <= TOLERANCE) continue;
-          const shift = Math.min(amount, Math.floor(gap / 2));
-          if (shift < 1) continue;
-          move(a, payer, alt, shift);
-          improved = true;
-          break;
-        }
-      }
-    }
-    if (!improved) break;
+  // 3. The one exception to whole bills: a bill bigger than the check paying
+  //    it (e.g. a mortgage larger than any single paycheck). Only the
+  //    shortfall (and enough to leave both checks even) is set aside from
+  //    the earlier eligible check with the most room.
+  const pieces = new Map<(typeof allocs)[number], { check: PlannedCheck; amount: number }[]>();
+  for (const a of [...allocs].sort((x, y) => y.bill.amount - x.bill.amount)) {
+    const i = a.on!;
+    if (!(i.leftover < 0 && a.bill.amount > i.amount)) continue;
+    const helper = a.options
+      .filter((j) => j !== i && j.date < i.date && j.leftover > 0)
+      .reduce<PlannedCheck | null>((best, j) => (!best || j.leftover > best.leftover ? j : best), null);
+    if (!helper) continue;
+    // Enough to cover the shortfall and bring this check up to what the
+    // others keep on average (whole bills then re-balance around it).
+    const others = checks.filter((c) => c !== i);
+    const avgLeft = others.length ? others.reduce((sum, c) => sum + c.leftover, 0) / others.length : 0;
+    const x = Math.ceil(Math.min(helper.leftover, Math.max(-i.leftover, avgLeft - i.leftover))); // whole dollars
+    helper.leftover -= x;
+    i.leftover += x;
+    pieces.set(a, [
+      { check: helper, amount: x },
+      { check: i, amount: Math.round((a.bill.amount - x) * 100) / 100 },
+    ]);
+    fixedPieces.add(a);
   }
+  // Re-balance the whole bills around the split one.
+  if (fixedPieces.size) improve();
 
-  // 4. Fold tiny pieces (under $50) back into the bill's other part on the
-  //    roomiest check, so nobody has to set aside $8 for the car.
+  // Results: bills on each check (whole, except the pieces above).
   for (const a of allocs) {
-    for (const [check, amount] of [...a.parts]) {
-      if (a.parts.size < 2 || amount >= MIN_PIECE) continue;
-      const others = [...a.parts.keys()].filter((c) => c !== check);
-      const roomiest = others.reduce((x, y) => (y.leftover > x.leftover ? y : x));
-      move(a, check, roomiest, amount);
-    }
-  }
-
-  for (const a of allocs) {
-    for (const [check, amount] of a.parts) {
-      check.bills.push({
-        ...a.bill,
-        amount: Math.round(amount * 100) / 100,
-        fullAmount: a.bill.amount,
-        split: a.parts.size > 1,
-      });
+    const split = pieces.get(a);
+    if (split) {
+      for (const piece of split) piece.check.bills.push({ ...a.bill, amount: piece.amount, fullAmount: a.bill.amount, split: true });
+    } else {
+      a.on!.bills.push({ ...a.bill, fullAmount: a.bill.amount, split: false });
     }
   }
   for (const c of checks) {
@@ -374,5 +396,5 @@ export function buildPaycheckPlan(
     c.leftover = Math.round((c.amount - c.billsTotal) * 100) / 100;
   }
   const target = checks.length ? checks.reduce((s, c) => s + c.leftover, 0) / checks.length : 0;
-  return { checks, fromCash: fromCash.sort((a, b) => a.date.localeCompare(b.date)), target };
+  return { checks, smallIncome, fromCash: fromCash.sort((a, b) => a.date.localeCompare(b.date)), target };
 }

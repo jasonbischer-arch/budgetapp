@@ -28,7 +28,6 @@ import {
   detectRecurring,
   IncomeSource,
   resetCategoryBudget,
-  saveSavingsPerCheck,
   markBudgetHelpDone,
   setCategoryBudgets,
   updateCategoryBudget,
@@ -108,9 +107,16 @@ function usePlan(data: HouseholdData, savingsOverride: number | null) {
   return useMemo(() => {
     const from = today();
     const to = endOfMonth(addDays(endOfMonth(from), 1)); // through end of next month
+    // Only your fixed expenses: the same bills as the Fixed list (credit card
+    // payments aren't included; the card's purchases are spending).
+    const fixedIds = new Set(
+      expenseBills(data.bills, data.accounts, data.liabilities)
+        .filter((b) => b.expense_type === 'fixed')
+        .map((b) => b.id),
+    );
     const plan = buildPaycheckPlan(
       data.incomes,
-      data.bills.map((b) => toBillSchedule(b, data.liabilities)),
+      data.bills.filter((b) => fixedIds.has(b.id)).map((b) => toBillSchedule(b, data.liabilities)),
       from,
       to,
       // Commission and other amounts you entered for upcoming paydays.
@@ -140,20 +146,16 @@ function usePlan(data: HouseholdData, savingsOverride: number | null) {
 
 function PaycheckPlanView({ data, goTo }: { data: HouseholdData; goTo: (s: Section) => void }) {
   const c = useTheme();
-  const { household, refreshHousehold } = useAuth();
-  const savingsOverride = household?.savings_per_check ?? null;
-  const p = usePlan(data, savingsOverride);
-  const [editing, setEditing] = useState(false);
-  const [savingsText, setSavingsText] = useState('');
-  const [err, setErr] = useState<string | null>(null);
+  const { household } = useAuth();
+  const p = usePlan(data, household?.savings_per_check ?? null);
 
   if (!data.incomes.length || !data.bills.length) {
     return (
       <Card>
         <T variant="heading">Build your paycheck plan</T>
         <T variant="muted">
-          Once your paychecks and bills are in, the plan assigns each bill to a paycheck and
-          gives every check the same savings and the same spending money. Paychecks are found
+          Once your paychecks and fixed bills are in, the plan pays each bill in full from one
+          paycheck, arranged so every check keeps about the same amount. Paychecks are found
           automatically from your bank deposits.
         </T>
         {!data.incomes.length && <Button title="Add paychecks" onPress={() => goTo('income')} />}
@@ -162,105 +164,37 @@ function PaycheckPlanView({ data, goTo }: { data: HouseholdData; goTo: (s: Secti
     );
   }
 
-  async function saveSavings(value: number | null) {
-    if (!household) return;
-    try {
-      await saveSavingsPerCheck(household.id, value);
-      await refreshHousehold();
-      setEditing(false);
-      setErr(null);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-  }
-
   const byMonth = new Map<string, PlannedCheck[]>();
   for (const check of p.plan.checks) {
     const key = startOfMonth(check.date);
     byMonth.set(key, [...(byMonth.get(key) ?? []), check]);
   }
-  const short = p.leftToSpend < p.spendPerCheck - 10;
+  const lefts = p.plan.checks.map((x) => x.leftover);
+  const minLeft = Math.min(...lefts);
+  const maxLeft = Math.max(...lefts);
+  const fixedTotal = p.plan.checks.reduce((s2, x) => s2 + x.billsTotal, 0);
 
   return (
     <>
       <GradientCard colors={c.gradPlan}>
         <T color={c.heroMuted} style={styles.summaryLabel}>
-          EVERY PAYCHECK
+          LEFT ON EACH CHECK AFTER FIXED BILLS
         </T>
-        <Row style={{ gap: Spacing.xl, alignItems: 'flex-end' }}>
-          <View>
-            <T color={c.heroMuted}>Save</T>
-            <T color={c.heroText} style={styles.summaryValue}>
-              {moneyWhole(p.savings)}
-            </T>
-          </View>
-          <View>
-            <T color={c.heroMuted}>Left to spend</T>
-            <T color={c.heroText} style={styles.summaryValue}>
-              {moneyWhole(p.leftToSpend)}
-            </T>
-          </View>
-        </Row>
+        <T color={c.heroText} style={styles.summaryValue}>
+          {lefts.length ? `${moneyWhole(minLeft)} – ${moneyWhole(maxLeft)}` : '—'}
+        </T>
         <T color={c.heroMuted}>
-          Bills come out first, from a check that arrives before each is due. Then every check
-          saves the same amount and leaves the same amount to spend.
+          Your fixed bills ({moneyWhole(fixedTotal)} over {p.plan.checks.length} checks) are each paid in full from one
+          check that arrives before the bill is due, arranged so every check keeps as close to the same amount as
+          possible. Only a bill bigger than a whole paycheck is split.
         </T>
       </GradientCard>
 
-      <Card>
-        <Row style={{ justifyContent: 'space-between' }}>
-          <View style={{ flex: 1 }}>
-            <T style={{ fontWeight: '600' }}>Savings per paycheck</T>
-            <T variant="small">
-              {p.auto
-                ? `Automatic: what's left after bills and your usual spending (${moneyWhole(p.spendPerCheck)} per check).`
-                : 'Set by you.'}
-            </T>
-          </View>
-          {!editing && (
-            <Button
-              title="Change"
-              kind="secondary"
-              onPress={() => {
-                setSavingsText(String(p.savings));
-                setEditing(true);
-              }}
-            />
-          )}
-        </Row>
-        {editing && (
-          <>
-            <Input
-              value={savingsText}
-              onChangeText={setSavingsText}
-              keyboardType="decimal-pad"
-              placeholder="$0"
-              accessibilityLabel="Savings per paycheck"
-            />
-            <Row style={{ gap: Spacing.sm }}>
-              <View style={{ flex: 1 }}>
-                <Button
-                  title="Save"
-                  onPress={() => {
-                    const v = Number(savingsText.replace(/[^0-9.]/g, ''));
-                    if (!Number.isNaN(v)) saveSavings(v);
-                  }}
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Button title={`Use automatic (${moneyWhole(p.autoSavings)})`} kind="secondary" onPress={() => saveSavings(null)} />
-              </View>
-            </Row>
-          </>
-        )}
-        {short && (
-          <T variant="small" color={c.warning}>
-            That leaves {moneyWhole(p.leftToSpend)} per check, below your usual spending of{' '}
-            {moneyWhole(p.spendPerCheck)}. See Budget for ways to cut.
-          </T>
-        )}
-        <ErrorText message={err} />
-      </Card>
+      {p.plan.smallIncome.length > 0 && (
+        <T variant="small">
+          Small deposits ({[...new Set(p.plan.smallIncome.map((x) => x.name))].join(', ')}) aren&apos;t used for bills.
+        </T>
+      )}
 
       {p.plan.fromCash.length > 0 && (
         <Card style={{ backgroundColor: c.warningSoft, borderColor: c.warningSoft }}>
@@ -283,7 +217,7 @@ function PaycheckPlanView({ data, goTo }: { data: HouseholdData; goTo: (s: Secti
             title={new Date(month + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
           />
           {checks.map((check) => (
-            <CheckCard key={check.id} check={check} savings={p.savings} typical={p.leftToSpend} />
+            <CheckCard key={check.id} check={check} />
           ))}
         </View>
       ))}
@@ -291,19 +225,9 @@ function PaycheckPlanView({ data, goTo }: { data: HouseholdData; goTo: (s: Secti
   );
 }
 
-function CheckCard({ check, savings, typical }: { check: PlannedCheck; savings: number; typical: number }) {
+function CheckCard({ check }: { check: PlannedCheck }) {
   const c = useTheme();
-  // Spending money comes first on a check squeezed by a big bill (groceries
-  // still need buying); savings take the cut. Any extra on a roomier check
-  // goes to savings.
-  const spend = Math.max(0, Math.min(typical, check.leftover));
-  const saved = Math.max(0, check.leftover - spend);
-  const low = saved < savings - 25;
-  const parts = [
-    { label: 'Bills', value: check.billsTotal, color: c.textMuted },
-    { label: 'Save', value: saved, color: c.saveColor },
-    { label: 'Spend', value: Math.max(0, spend), color: c.accent },
-  ];
+  const left = check.leftover;
   return (
     <Card>
       <Row style={{ justifyContent: 'space-between' }}>
@@ -321,34 +245,32 @@ function CheckCard({ check, savings, typical }: { check: PlannedCheck; savings: 
         </T>
       </Row>
 
-      {/* Where this check goes: bills, savings, spending */}
-      <View style={styles.split} accessibilityLabel={`Bills ${money(check.billsTotal)}, save ${money(saved)}, spend ${money(spend)}`}>
-        {parts.map((part) =>
-          part.value > 0 ? (
-            <View key={part.label} style={{ flex: part.value, backgroundColor: part.color, height: '100%' }} />
-          ) : null,
+      {/* Fixed bills vs what's left */}
+      <View
+        style={styles.split}
+        accessibilityLabel={`Fixed bills ${money(check.billsTotal)}, left ${money(left)}`}>
+        {check.billsTotal > 0 && (
+          <View style={{ flex: check.billsTotal, backgroundColor: c.textMuted, height: '100%' }} />
         )}
+        {left > 0 && <View style={{ flex: left, backgroundColor: c.accent, height: '100%' }} />}
       </View>
-      <Row style={{ gap: Spacing.lg }}>
-        {parts.map((part) => (
-          <Row key={part.label} style={{ gap: 6 }}>
-            <View style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: part.color }} />
-            <T variant="small">
-              {part.label} {moneyWhole(part.value)}
-            </T>
-          </Row>
-        ))}
-      </Row>
 
-      {check.bills.length > 0 && <Divider />}
+      {left < 0 && (
+        <T variant="small" color={c.negative} style={{ fontWeight: '600' }}>
+          ⚠️ {money(-left)} short: a bill here is bigger than this check. Cover it from savings or the previous
+          check&apos;s leftover.
+        </T>
+      )}
+
+      {check.bills.length === 0 && <T variant="muted">No fixed bills from this check.</T>}
       {check.bills.map((b) => (
         <Row key={b.id} style={{ justifyContent: 'space-between' }}>
           <View style={{ flexShrink: 1 }}>
             <T numberOfLines={1}>{b.name}</T>
             <T variant="small">
               {b.split
-                ? `Set aside ${money(b.amount)} of ${money(b.fullAmount)} · due ${shortDate(b.date)}`
-                : `Due ${shortDate(b.date)}`}
+                ? `${money(b.amount)} of ${money(b.fullAmount)} · due ${shortDate(b.date)} · too big for one check`
+                : `Due ${shortDate(b.date)} · paid in full`}
             </T>
           </View>
           <T variant="money">−{money(b.amount)}</T>
@@ -356,24 +278,11 @@ function CheckCard({ check, savings, typical }: { check: PlannedCheck; savings: 
       ))}
       <Divider />
       <Row style={{ justifyContent: 'space-between' }}>
-        <T>Move to savings</T>
-        <T variant="money" color={c.primary}>
-          {money(saved)}
+        <T style={{ fontWeight: '700' }}>Left after fixed bills</T>
+        <T variant="money" style={{ fontSize: 18 }} color={left < 0 ? c.negative : undefined}>
+          {money(left)}
         </T>
       </Row>
-      <Row style={{ justifyContent: 'space-between' }}>
-        <T style={{ fontWeight: '700' }}>Left to spend</T>
-        <T variant="money" style={{ fontSize: 18 }} color={spend < 0 ? c.negative : undefined}>
-          {money(spend)}
-        </T>
-      </Row>
-      {low && (
-        <T variant="small" color={c.warning}>
-          {spend < typical - 25
-            ? 'Tight check: a big bill is due before the next paycheck. Nothing to save and less to spend this time.'
-            : `Saves less this time (usually ${moneyWhole(savings)}): a big bill is due before the next paycheck.`}
-        </T>
-      )}
     </Card>
   );
 }
