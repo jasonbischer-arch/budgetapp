@@ -418,3 +418,18 @@ export function payeesToAdd(
       (a.recurring ? b.typical - a.typical : b.lastDate.localeCompare(a.lastDate)),
   );
 }
+
+/**
+ * Whether to offer the monthly budget check-in: there are suggestions you
+ * haven't already set as budgets, and you haven't taken them this month.
+ * Taking them hides the offer until the 1st of next month.
+ */
+export function budgetHelpDue(
+  cuts: Pick<CutSuggestion, 'categoryId' | 'target'>[],
+  budgets: Map<string, number | null>,
+  doneMonth: string | null,
+  now: Date,
+): boolean {
+  if (doneMonth && doneMonth >= monthStart(now)) return false;
+  return cuts.some((x) => budgets.get(x.categoryId) !== x.target);
+}

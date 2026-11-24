@@ -30,6 +30,8 @@ import {
 } from '@/lib/household-data';
 import { categoryEmoji } from '@/lib/visuals';
 import {
+  budgetHelpDue,
+  cutSuggestions,
   expenseBreakdown,
   periodMonths,
   spendingByCategory,
@@ -82,6 +84,18 @@ export default function Overview() {
     const outgoing = bills.reduce((s, x) => s + x.amount, 0);
     return { checks, bills, incoming, outgoing };
   }, [data.incomes, data.expected, data.bills, data.liabilities]);
+
+  // Monthly budget check-in: the first week of each month, until you act.
+  const cuts = cutSuggestions(data.flows, data.categories, now, data.firstDate);
+  const showCheckIn =
+    now.getDate() <= 7 &&
+    budgetHelpDue(
+      cuts,
+      new Map(data.categories.map((k) => [k.id, k.monthly_budget])),
+      household?.budget_help_month ?? null,
+      now,
+    );
+  const cutSavings = cuts.reduce((s, x) => s + x.savings, 0);
 
   const months = periodMonths(now, Number(period));
   const totals = totalsFor(data.flows, months);
@@ -151,6 +165,24 @@ export default function Overview() {
             </View>
           )}
         </GradientCard>
+      )}
+
+      {showCheckIn && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Monthly budget check-in: save about ${moneyWhole(cutSavings)} a month. Open`}
+          onPress={() => router.push({ pathname: '/plan', params: { section: 'budget' } })}
+          style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}>
+          <Card style={{ backgroundColor: c.primarySoft, borderColor: c.primary }}>
+            <T style={{ fontWeight: '700' }} color={c.primary}>
+              🗓️ Your {monthName} budget check-in is ready
+            </T>
+            <T variant="small">
+              {cuts.length} place{cuts.length === 1 ? '' : 's'} to cut could save about {moneyWhole(cutSavings)} a
+              month. Tap to review and set your budget ›
+            </T>
+          </Card>
+        </Pressable>
       )}
 
       {/* Trailing 12-month averages */}

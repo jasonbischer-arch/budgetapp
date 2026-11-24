@@ -433,6 +433,11 @@ export async function deleteExpectedIncome(id: string) {
   unwrap(await supabase.from('expected_income').delete().eq('id', id));
 }
 
+/** Remembers you took this month's budget suggestions (they return on the 1st). */
+export async function markBudgetHelpDone(householdId: string, month: string) {
+  unwrap(await supabase.from('households').update({ budget_help_month: month }).eq('id', householdId));
+}
+
 export async function saveTaxSettings(householdId: string, tax_state: string | null, retirement_pct: number) {
   unwrap(await supabase.from('households').update({ tax_state, retirement_pct }).eq('id', householdId));
 }

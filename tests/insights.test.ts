@@ -56,3 +56,19 @@ const ps = paycheckSplit({ typicalAfterBills: 900, variablePerMonth: 1300, check
 assert(ps.savings === 590 && Math.abs(ps.leftToSpend - 310) < 0.01, "auto savings = after bills - spending per check (rounded to $10): " + JSON.stringify(ps));
 assert(paycheckSplit({ typicalAfterBills: 900, variablePerMonth: 1300, checksPerMonth: 4.33, savingsOverride: 200 }).leftToSpend === 700, "your own savings amount wins");
 assert(paycheckSplit({ typicalAfterBills: 200, variablePerMonth: 1300, checksPerMonth: 2, savingsOverride: null }).savings === 0, "never suggests negative savings");
+
+// --- Monthly budget check-in -----------------------------------------------
+{
+  const { budgetHelpDue } = await import("../src/lib/insights.ts");
+  const cutsX = [{ categoryId: "dine", target: 400 }, { categoryId: "shop", target: 200 }];
+  const nov = new Date(2026, 10, 15, 12);
+  const dec1 = new Date(2026, 11, 1, 9);
+  const unset = new Map<string, number | null>([["dine", 500], ["shop", null]]);
+  const set = new Map<string, number | null>([["dine", 400], ["shop", 200]]);
+  if (!budgetHelpDue(cutsX, unset, null, nov)) throw new Error("FAIL: offered when suggestions aren't budgets yet");
+  if (budgetHelpDue(cutsX, set, "2026-11-01", nov)) throw new Error("FAIL: hidden for the rest of the month after taking them");
+  if (budgetHelpDue(cutsX, unset, "2026-11-01", nov)) throw new Error("FAIL: hidden all month once taken, even if budgets change");
+  if (!budgetHelpDue([{ categoryId: "dine", target: 380 }], set, "2026-11-01", dec1)) throw new Error("FAIL: comes back on the 1st with new suggestions");
+  if (budgetHelpDue(cutsX, set, "2026-10-01", dec1)) throw new Error("FAIL: nothing to offer when budgets already match");
+  console.log("ok - budget check-in: hidden after taking suggestions, back on the 1st");
+}

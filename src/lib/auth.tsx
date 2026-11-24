@@ -13,6 +13,8 @@ export interface Household {
   tax_state: string | null;
   /** Pre-tax retirement % taken from commission. */
   retirement_pct: number;
+  /** Month (YYYY-MM-01) you took the "where you can cut" suggestions as your budget. */
+  budget_help_month: string | null;
 }
 
 interface AuthState {
@@ -38,7 +40,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // RLS returns only the household this user belongs to.
     const { data } = await supabase
       .from('households')
-      .select('id, name, invite_code, savings_per_check, tax_state, retirement_pct')
+      .select('id, name, invite_code, savings_per_check, tax_state, retirement_pct, budget_help_month')
       .maybeSingle();
     const h = data as Household | null;
     setHousehold(

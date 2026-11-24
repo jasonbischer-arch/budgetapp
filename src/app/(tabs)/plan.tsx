@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
@@ -29,6 +29,7 @@ import {
   IncomeSource,
   resetCategoryBudget,
   saveSavingsPerCheck,
+  markBudgetHelpDone,
   setCategoryBudgets,
   updateCategoryBudget,
 } from '@/lib/data';
@@ -42,10 +43,12 @@ import {
   useHouseholdData,
 } from '@/lib/household-data';
 import {
+  budgetHelpDue,
   categoryAverages,
   cutSuggestions,
   expenseBreakdown,
   paycheckSplit,
+  monthStart,
   periodMonths,
   spendingByCategory,
   trailingMonths,
@@ -72,8 +75,14 @@ const SECTIONS: { value: Section; label: string }[] = [
 ];
 
 export default function PlanScreen() {
+  // Links can open a section directly, e.g. /plan?section=budget.
+  const params = useLocalSearchParams<{ section?: string }>();
   const [section, setSection] = useState<Section>('plan');
   const { data, loading, error, reload } = useHouseholdData();
+  useEffect(() => {
+    const wanted = SECTIONS.find((x) => x.value === params.section);
+    if (wanted) setSection(wanted.value);
+  }, [params.section]);
 
   return (
     <Screen refreshing={loading} onRefresh={reload}>
@@ -732,8 +741,10 @@ function IncomeView({ data, reload }: { data: HouseholdData; reload: () => void 
 
 function BudgetView({ data, reload }: { data: HouseholdData; reload: () => void }) {
   const c = useTheme();
+  const { household, refreshHousehold } = useAuth();
   const [err, setErr] = useState<string | null>(null);
   const [applying, setApplying] = useState<string | null>(null);
+  const [justSet, setJustSet] = useState(false);
   const now = useMemo(() => new Date(), []);
 
   const months = trailingMonths(now, data.firstDate);
@@ -755,11 +766,24 @@ function BudgetView({ data, reload }: { data: HouseholdData; reload: () => void 
   const fixedCats = data.categories.filter((x) => x.kind === 'expense' && x.expense_type === 'fixed');
   const budgetOf = (id: string) => data.categories.find((k) => k.id === id)?.monthly_budget;
 
+  const budgets = new Map(data.categories.map((k) => [k.id, k.monthly_budget]));
+  const helpDue = budgetHelpDue(cuts, budgets, household?.budget_help_month ?? null, now);
+  const nextFirst = new Date(now.getFullYear(), now.getMonth() + 1, 1).toLocaleDateString('en-US', {
+    month: 'long',
+    day: 'numeric',
+  });
+
   async function apply(list: typeof cuts, label: string) {
     setApplying(label);
     setErr(null);
     try {
       await setCategoryBudgets(list.map((x) => ({ id: x.categoryId, monthly_budget: x.target })));
+      // Took them all: hide the suggestions until the 1st of next month.
+      if (label === 'all' && household) {
+        await markBudgetHelpDone(household.id, monthStart(now));
+        await refreshHousehold();
+        setJustSet(true);
+      }
       reload();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -803,6 +827,19 @@ function BudgetView({ data, reload }: { data: HouseholdData; reload: () => void 
         Monthly averages over {months.size || 0} complete month{months.size === 1 ? '' : 's'} of bank history.
       </T>
 
+      {justSet && !helpDue && (
+        <Card style={{ backgroundColor: c.primarySoft, borderColor: c.primarySoft }}>
+          <T style={{ fontWeight: '700' }} color={c.primary}>
+            ✓ Budgets set for {now.toLocaleDateString('en-US', { month: 'long' })}
+          </T>
+          <T variant="small">
+            Saving about {moneyWhole(monthlySavings)} a month. New suggestions on {nextFirst}.
+          </T>
+        </Card>
+      )}
+
+      {(helpDue || (cuts.length === 0 && !justSet)) && (
+      <>
       <SectionHeader title="Where you can cut" />
       <Card>
         {cuts.length === 0 ? (
@@ -860,6 +897,8 @@ function BudgetView({ data, reload }: { data: HouseholdData; reload: () => void 
           </>
         )}
       </Card>
+      </>
+      )}
 
       <SectionHeader title="Variable spending budgets" action="Categories" onAction={() => router.push('/categories')} />
       <Card>
