@@ -70,6 +70,9 @@ export default function BillEditor() {
   const { household } = useAuth();
 
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [otherBills, setOtherBills] = useState<Bill[]>([]);
+  // A new bill that matches one you already have: combine (count it once)?
+  const [combine, setCombine] = useState<'ask' | 'yes' | 'no'>('ask');
   const [liabilities, setLiabilities] = useState<Liability[]>([]);
   const [existing, setExisting] = useState<Bill | null>(null);
   const [kind, setKind] = useState<Kind>(debt || accountId ? 'debt' : 'bill');
@@ -91,6 +94,8 @@ export default function BillEditor() {
     (async () => {
       const [accts, liabs, bills] = await Promise.all([fetchAccounts(), fetchLiabilities(), fetchBills()]);
       setAccounts(accts.filter((a) => a.type === 'credit' || a.type === 'loan'));
+      const cards = new Set(accts.filter((a) => a.type === 'credit').map((a) => a.id));
+      setOtherBills(bills.filter((b) => b.id !== id && !(b.account_id && cards.has(b.account_id))));
       setLiabilities(liabs);
       if (!isNew) {
         const b = bills.find((x) => x.id === id);
@@ -151,6 +156,13 @@ export default function BillEditor() {
   if (rate != null && (rate < 0 || rate > 100)) problems.push('an interest rate between 0 and 100');
   const valid = problems.length === 0;
 
+  // Same payment already tracked? (amount within 2%, e.g. a car loan you're
+  // entering that was already found in your bank activity)
+  const twin =
+    isNew && payment != null && payment > 0
+      ? otherBills.find((b) => b.amount != null && Math.abs(b.amount - payment) <= Math.max(1, 0.02 * payment))
+      : undefined;
+
   const preview =
     manualDebt && bal != null && rate != null && payment != null ? payoff(bal, rate, payment, today()) : null;
 
@@ -168,6 +180,10 @@ export default function BillEditor() {
             today: today(),
           })
         : true;
+      // Combining: the existing bill makes way, and this one takes over its
+      // bank payments, so the payment is counted once.
+      const merging = twin && combine === 'yes' ? twin : null;
+      if (merging) await deleteBill(merging);
       await saveBill(household.id, {
         ...(isNew ? {} : { id }),
         name: name.trim(),
@@ -186,6 +202,7 @@ export default function BillEditor() {
         expense_type: expenseType,
         // Picked from your payments: link that payee's payments to this bill.
         ...(isNew && matchKey ? { match_key: matchKey } : {}),
+        ...(merging?.match_key ? { match_key: merging.match_key } : {}),
       });
       router.back();
     } catch (e) {
@@ -379,6 +396,26 @@ export default function BillEditor() {
         <T variant="small" color={c.warning}>
           Still needed: {problems.join(', ')}.
         </T>
+      )}
+      {twin && combine !== 'no' && (
+        <Card style={{ borderColor: c.warning }}>
+          <T style={{ fontWeight: '700' }}>Is this the same as “{twin.name}”?</T>
+          <T variant="small">
+            You already have {twin.name} for {money(twin.amount ?? 0)}, due the {ordinal(twin.due_day)}. If it&apos;s the
+            same payment, combine them so it&apos;s counted once: this one replaces it and takes over its bank payments.
+          </T>
+          <Row style={{ gap: Spacing.sm }}>
+            <View style={{ flex: 1 }}>
+              <Button
+                title={combine === 'yes' ? '✓ Will combine' : 'Same payment: combine'}
+                onPress={() => setCombine('yes')}
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Button title="Different payment" kind="secondary" onPress={() => setCombine('no')} />
+            </View>
+          </Row>
+        </Card>
       )}
       <ErrorText message={error} />
       <Button title="Save" onPress={save} loading={saving} disabled={!valid} />

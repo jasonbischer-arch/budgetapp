@@ -52,10 +52,11 @@ const EMPTY: HouseholdData = {
 /** Everything the Overview and Plan tabs need, reloaded on focus. */
 export function useHouseholdData() {
   return useQuery<HouseholdData>(async () => {
-    // Keep automatic budgets at the latest 12-month average (cheap; only
-    // changes categories that follow the average).
-    await refreshAutoBudgets().catch(() => {});
-    const [accounts, categories, flows, firstDate, incomes, bills, liabilities, expected, planRules] = await Promise.all([
+    // Keep automatic budgets at the latest 12-month average. It runs alongside
+    // everything else instead of first; categories are only fetched again if
+    // a budget actually changed.
+    const budgets = refreshAutoBudgets().catch(() => 0);
+    const [accounts, firstCategories, flows, firstDate, incomes, bills, liabilities, expected, planRules] = await Promise.all([
       fetchAccounts(),
       fetchCategories(),
       fetchMonthlyFlows(monthStart(new Date(), -12)),
@@ -67,8 +68,9 @@ export function useHouseholdData() {
       fetchExpectedIncome(today(), endOfMonth(addDays(endOfMonth(today()), 1))),
       fetchPlanRules(),
     ]);
+    const categories = (await budgets) > 0 ? await fetchCategories() : firstCategories;
     return { accounts, categories, flows, firstDate, incomes, bills, liabilities, expected, planRules };
-  }, EMPTY);
+  }, EMPTY, '', 'household');
 }
 
 /** Cash in checking/savings and what's owed on cards (visible accounts). */

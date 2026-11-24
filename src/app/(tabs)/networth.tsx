@@ -20,7 +20,11 @@ import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
   Account,
+  Bill,
   fetchAccounts,
+  fetchBills,
+  fetchLiabilities,
+  Liability,
   fetchManualAssets,
   fetchNetWorthHistory,
   fetchNetWorthItems,
@@ -30,7 +34,8 @@ import {
   updateAccountNetWorth,
   useQuery,
 } from '@/lib/data';
-import { money, moneyWhole } from '@/lib/format';
+import { duration, money, moneyWhole, monthYear } from '@/lib/format';
+import { debtDetails } from '@/lib/household-data';
 import { GROUP_STYLE } from '@/lib/visuals';
 
 const ASSET_GROUPS: { kind: string; label: string }[] = [
@@ -55,21 +60,27 @@ interface Data {
   history: NetWorthPoint[];
   assets: ManualAsset[];
   accounts: Account[];
+  bills: Bill[];
+  liabilities: Liability[];
 }
 
 export default function NetWorth() {
   const c = useTheme();
   const { data, loading, error, reload } = useQuery<Data>(
     async () => {
-      const [items, history, assets, accounts] = await Promise.all([
+      const [items, history, assets, accounts, bills, liabilities] = await Promise.all([
         fetchNetWorthItems(),
         fetchNetWorthHistory(),
         fetchManualAssets(),
         fetchAccounts(),
+        fetchBills(),
+        fetchLiabilities(),
       ]);
-      return { items, history, assets, accounts };
+      return { items, history, assets, accounts, bills, liabilities };
     },
-    { items: [], history: [], assets: [], accounts: [] },
+    { items: [], history: [], assets: [], accounts: [], bills: [], liabilities: [] },
+    '',
+    'networth',
   );
 
   const assets = data.items.filter((i) => i.section === 'asset');
@@ -86,7 +97,11 @@ export default function NetWorth() {
     .filter((a) => (a.kind === 'home' || a.kind === 'vehicle') && a.loan_ref)
     .map((a) => {
       const loan = debts.find((d) => d.ref_id === a.loan_ref);
-      return { asset: a, loan, equity: a.amount - (loan?.amount ?? 0) };
+      // The loan's bill (one you entered, or the one paying a connected loan),
+      // for its payoff date.
+      const bill = data.bills.find((b) => b.id === a.loan_ref || b.account_id === a.loan_ref);
+      const plan = bill ? debtDetails(bill, data.accounts, data.liabilities).payoff : null;
+      return { asset: a, loan, equity: a.amount - (loan?.amount ?? 0), plan };
     });
 
   const debtRatio = totalAssets > 0 ? totalDebts / totalAssets : null;
@@ -141,7 +156,7 @@ export default function NetWorth() {
       {equity.length > 0 && (
         <>
           <SectionHeader title="Equity" />
-          {equity.map(({ asset, loan, equity: eq }) => (
+          {equity.map(({ asset, loan, equity: eq, plan }) => (
             <Card key={asset.ref_id}>
               <Row style={{ justifyContent: 'space-between' }}>
                 <T variant="heading">{asset.name}</T>
@@ -152,6 +167,11 @@ export default function NetWorth() {
               <T variant="small">
                 Worth {moneyWhole(asset.amount)} − {loan ? `${loan.name} ${moneyWhole(loan.amount)}` : 'loan'} owed
               </T>
+              {plan?.months != null && plan.payoffDate && (
+                <T variant="small" color={c.positive} style={{ fontWeight: '600' }}>
+                  🏁 Paid off {monthYear(plan.payoffDate)} · {duration(plan.months)} to go
+                </T>
+              )}
               {asset.amount > 0 && (
                 <MeterRow
                   label="You own"

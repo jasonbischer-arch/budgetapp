@@ -8,9 +8,9 @@ import { Button, Card, Divider, ErrorText, IconBubble, Row, Screen, T } from '@/
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { confirmAction } from '@/lib/confirm';
-import { deleteBill, setBillExpenseType } from '@/lib/data';
-import { money, moneyWhole, ordinal } from '@/lib/format';
-import { expenseBills, useHouseholdData } from '@/lib/household-data';
+import { Bill, deleteBill, setBillExpenseType } from '@/lib/data';
+import { duration, money, moneyWhole, monthYear, ordinal } from '@/lib/format';
+import { debtDetails, expenseBills, useHouseholdData } from '@/lib/household-data';
 import { expenseBreakdown, ExpenseItem, trailingMonths } from '@/lib/insights';
 import { billEmoji, categoryEmoji } from '@/lib/visuals';
 
@@ -85,6 +85,16 @@ export default function ExpensesSheet() {
     );
   }
 
+  /** For loans: what's left and when it's paid off. */
+  const payoffText = (bill: Bill) => {
+    if (!bill.is_debt) return '';
+    const d = debtDetails(bill, data.accounts, data.liabilities);
+    if (d.balance == null) return ' · add the balance to see the payoff date';
+    if (!d.payoff) return ` · ${moneyWhole(d.balance)} left`;
+    if (d.payoff.months == null) return ` · ${moneyWhole(d.balance)} left · payment doesn't cover interest`;
+    return ` · ${moneyWhole(d.balance)} left · paid off ${monthYear(d.payoff.payoffDate!)} (${duration(d.payoff.months)})`;
+  };
+
   const ItemRow = ({ item }: { item: ExpenseItem }) => {
     const bill = item.kind === 'bill' ? data.bills.find((b) => b.id === item.id) : undefined;
     const cat = item.kind === 'category' && item.id ? data.categories.find((x) => x.id === item.id) : undefined;
@@ -98,9 +108,9 @@ export default function ExpensesSheet() {
               <T numberOfLines={1}>{item.name}</T>
               <T variant="small">
                 {bill
-                  ? bill.frequency === 'monthly'
-                    ? `Due on the ${ordinal(bill.due_day)}`
-                    : `${bill.frequency}, ${money(bill.amount ?? 0)} each`
+                  ? (bill.frequency === 'monthly'
+                      ? `Due on the ${ordinal(bill.due_day)}`
+                      : `${bill.frequency}, ${money(bill.amount ?? 0)} each`) + payoffText(bill)
                   : item.budgeted
                     ? `Your budget · you average ${money(item.average ?? 0)}`
                     : 'Monthly average from your bank activity'}

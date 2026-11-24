@@ -33,6 +33,7 @@ export default function Transactions() {
     },
     { txns: [], categories: [], accounts: [] },
     range.from,
+    `transactions:${range.from}`,
   );
 
   const catById = useMemo(() => new Map(data.categories.map((x) => [x.id, x])), [data.categories]);

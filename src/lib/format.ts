@@ -44,3 +44,19 @@ export function weekday(iso: string) {
   const [y, m, d] = iso.split('-').map(Number);
   return new Date(y, m - 1, d).toLocaleDateString('en-US', { weekday: 'short' });
 }
+
+/** "Mar 2030" from "2030-03". */
+export function monthYear(ym: string) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m - 1, 15).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+}
+
+/** "3 yrs 4 mos" from a number of months. */
+export function duration(months: number) {
+  const y = Math.floor(months / 12);
+  const m = months % 12;
+  const parts = [];
+  if (y) parts.push(`${y} yr${y === 1 ? '' : 's'}`);
+  if (m || !y) parts.push(`${m} mo${m === 1 ? '' : 's'}`);
+  return parts.join(' ');
+}

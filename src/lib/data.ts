@@ -196,17 +196,32 @@ export interface Transaction {
  * Runs a loader whenever the screen gains focus or `key` changes (e.g. the
  * selected month); exposes reload().
  */
-export function useQuery<T>(loader: () => Promise<T>, initial: T, key = '') {
-  const [data, setData] = useState<T>(initial);
-  const [loading, setLoading] = useState(true);
+/** Last loaded data per cache key: screens show it instantly, then refresh. */
+const queryCache = new Map<string, unknown>();
+
+/** Forget cached data (e.g. on sign-out). */
+export function clearQueryCache() {
+  queryCache.clear();
+}
+
+export function useQuery<T>(loader: () => Promise<T>, initial: T, key = '', cacheKey?: string) {
+  const cached = cacheKey ? (queryCache.get(cacheKey) as T | undefined) : undefined;
+  const [data, setData] = useState<T>(cached ?? initial);
+  // With cached data there's nothing to wait for: refresh quietly.
+  const [loading, setLoading] = useState(cached === undefined);
+  const cacheKeyRef = useRef(cacheKey);
+  cacheKeyRef.current = cacheKey;
   const [error, setError] = useState<string | null>(null);
   const loaderRef = useRef(loader);
   loaderRef.current = loader;
 
   const reload = useCallback(async () => {
-    setLoading(true);
+    const quiet = cacheKeyRef.current !== undefined && queryCache.has(cacheKeyRef.current);
+    if (!quiet) setLoading(true);
     try {
-      setData(await loaderRef.current());
+      const fresh = await loaderRef.current();
+      if (cacheKeyRef.current) queryCache.set(cacheKeyRef.current, fresh);
+      setData(fresh);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -297,8 +312,8 @@ export async function resetCategoryBudget(id: string) {
 }
 
 /** Sets variable-category budgets to their 12-month average (server-side). */
-export async function refreshAutoBudgets() {
-  unwrap(await supabase.rpc('refresh_auto_budgets'));
+export async function refreshAutoBudgets(): Promise<number> {
+  return Number(unwrap(await supabase.rpc('refresh_auto_budgets')) ?? 0);
 }
 
 export async function saveSavingsPerCheck(householdId: string, value: number | null) {

@@ -1,6 +1,7 @@
 import type { Session } from '@supabase/supabase-js';
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 
+import { clearQueryCache } from './data';
 import { supabase } from './supabase';
 
 export interface Household {
@@ -36,6 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const loadHousehold = useCallback(async (s: Session | null) => {
     if (!s) {
+      clearQueryCache(); // nothing from this account stays in memory
       setHousehold(null);
       return;
     }
@@ -76,6 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading,
     refreshHousehold: () => loadHousehold(session),
     signOut: async () => {
+      clearQueryCache();
       await supabase.auth.signOut();
     },
   };
