@@ -70,45 +70,39 @@ assert(paydays(firsts, "2026-07-25", "2026-07-31").map(p => p.date)[0] === "2026
   console.log("ok - unedited checks aren't marked as yours");
 }
 
-// --- Whole bills only, most even leftovers -----------------------------------
+// --- Exactly even across your paychecks (bills split as needed) -------------
 {
   const { buildPaycheckPlan: build } = await import("../src/lib/schedule.ts");
   const a = { id: "a", name: "Jason", amount: 3059, frequency: "biweekly" as const, anchor_date: "2026-12-04", day1: null, day2: null };
   const b = { id: "b", name: "Wife", amount: 1779, frequency: "semimonthly" as const, anchor_date: null, day1: 7, day2: 22 };
   const side = { id: "sq", name: "Square", amount: 116, frequency: "monthly" as const, anchor_date: null, day1: 10, day2: null };
   const M = (id: string, amount: number) => ({ id, name: id, amount, frequency: "monthly" as const, due_day: 28, due_month: null });
-  const fixed = [M("childcare", 1375), M("tower", 677.69), M("ally", 425.67), M("gokadar", 348.75), M("progressive", 276.78),
-    M("aidvantage", 157.3), M("firstmark", 151.51), M("sunstrong", 128.56), M("netflix", 21.31)];
+  const fixed = [M("mortgage", 3186.18), M("childcare", 1375), M("tower", 677.69), M("ally", 425.67), M("gokadar", 348.75),
+    M("progressive", 276.78), M("aidvantage", 157.3), M("firstmark", 151.51), M("sunstrong", 128.56), M("netflix", 21.31)];
+  const total = fixed.reduce((s2, f) => s2 + f.amount, 0);
   const p = build([a, b, side], fixed, "2026-12-01", "2026-12-27");
-  assert(p.checks.length === 4, "4 checks in December: " + p.checks.map((c) => c.date).join(", "));
-  assert(p.smallIncome.length === 1 && p.smallIncome[0].name === "Square", "a $116 side deposit isn't one of the checks");
-  assert(p.checks.every((c) => c.bills.every((x) => !x.split && x.amount === x.fullAmount)), "bills that fit a check are paid in full");
-  const paid = p.checks.flatMap((c) => c.bills.map((x) => x.refId)).sort();
-  assert(JSON.stringify(paid) === JSON.stringify(fixed.map((f) => f.id).sort()), "each bill paid exactly once");
-
-  // Compare with the best possible whole-bill arrangement (try them all).
-  const amounts = p.checks.map((c) => c.amount);
-  let best = Infinity;
-  const rec = (k: number, left: number[]) => {
-    if (k === fixed.length) {
-      const mean = left.reduce((s2, x) => s2 + x, 0) / left.length;
-      best = Math.min(best, left.reduce((s2, x) => s2 + (x - mean) ** 2, 0));
-      return;
-    }
-    for (let i = 0; i < left.length; i++) { left[i] -= fixed[k].amount; rec(k + 1, left); left[i] += fixed[k].amount; }
-  };
-  rec(0, [...amounts]);
+  assert(p.checks.length === 4 && p.smallIncome.length === 1, "4 paychecks; the $116 side deposit isn't one");
   const lefts = p.checks.map((c) => c.leftover);
-  const mean = lefts.reduce((s2, x) => s2 + x, 0) / lefts.length;
-  const ours = lefts.reduce((s2, x) => s2 + (x - mean) ** 2, 0);
-  console.log("  leftovers:", lefts.map((x) => x.toFixed(0)).join(" / "));
-  assert(ours <= best * 1.05 + 1, "as even as the best whole-bill arrangement");
+  console.log("  leftovers:", lefts.map((x) => x.toFixed(2)).join(" / "));
+  assert(Math.max(...lefts) - Math.min(...lefts) <= 0.02, "every check keeps exactly the same amount");
+  const expected = (p.checks.reduce((s2, c) => s2 + c.amount, 0) - total) / 4;
+  assert(Math.abs(lefts[0] - expected) <= 0.02, "each keeps (income - bills) / 4 = " + expected.toFixed(2));
+  for (const f of fixed) {
+    const paid = p.checks.flatMap((c) => c.bills).filter((x) => x.refId === f.id).reduce((s2, x) => s2 + x.amount, 0);
+    assert(Math.abs(paid - f.amount) < 0.011, `${f.id} paid in full across its checks`);
+  }
 
-  // A bill bigger than any check can't be whole: only it is split.
-  const big = build([a, b], [M("mortgage", 3186.18), ...fixed.slice(1)], "2026-12-01", "2026-12-27");
-  const splitBills = big.checks.flatMap((c) => c.bills.filter((x) => x.split).map((x) => x.refId));
-  assert(splitBills.length === 2 && splitBills.every((id) => id === "mortgage"), "only the oversized mortgage is split (2 parts)");
-  const mortgageTotal = big.checks.flatMap((c) => c.bills).filter((x) => x.refId === "mortgage").reduce((s2, x) => s2 + x.amount, 0);
-  assert(Math.abs(mortgageTotal - 3186.18) < 0.01, "its parts add up to the full bill");
-  assert(big.checks.every((c) => c.leftover >= 0), "no check goes negative: " + big.checks.map((c) => c.leftover.toFixed(0)).join(" / "));
+  // Your own plan: mortgage from Jason's check, child care $500 from the wife's and the rest from Jason's.
+  const rules = [
+    { billId: "mortgage", sourceId: "a", amount: null },
+    { billId: "childcare", sourceId: "b", amount: 500 },
+    { billId: "childcare", sourceId: "a", amount: null },
+  ];
+  const mine = build([a, b], fixed, "2026-12-01", "2026-12-27", [], rules);
+  const mort = mine.checks.flatMap((c) => c.bills.filter((x) => x.refId === "mortgage").map((x) => ({ who: c.refId, amt: x.amount, custom: x.custom })));
+  assert(mort.length === 1 && mort[0].who === "a" && Math.abs(mort[0].amt - 3186.18) < 0.01 && mort[0].custom, "mortgage on the paycheck you chose, in full");
+  const cc = mine.checks.flatMap((c) => c.bills.filter((x) => x.refId === "childcare").map((x) => ({ who: c.refId, amt: x.amount })));
+  assert(cc.some((x) => x.who === "b" && x.amt === 500) && cc.some((x) => x.who === "a" && Math.abs(x.amt - 875) < 0.01), "child care split the way you set it: $500 + the rest");
+  const lastA = mine.checks.filter((c) => c.refId === "a").at(-1)!;
+  assert(mine.checks.flatMap((c) => c.bills).filter((x) => x.refId === "mortgage").length === 1 && lastA.bills.some((x) => x.refId === "mortgage"), "your rule uses the latest check from that paycheck before the due date");
 }

@@ -502,6 +502,50 @@ export async function fetchSpendingSince(from: string) {
   return rows.map((r) => ({ ...r, amount: Number(r.amount) }));
 }
 
+// ---------------------------------------------------------------------------
+// Your own paycheck plan
+// ---------------------------------------------------------------------------
+
+export interface PlanRuleRow {
+  id: string;
+  bill_id: string;
+  income_source_id: string;
+  /** Dollars from this paycheck; null = the rest of the bill. */
+  amount: number | null;
+}
+
+export async function fetchPlanRules(): Promise<PlanRuleRow[]> {
+  const rows = unwrap(
+    await supabase.from('plan_rules').select('id, bill_id, income_source_id, amount').order('created_at'),
+  ) as PlanRuleRow[];
+  return rows.map((r) => ({ ...r, amount: num(r.amount) }));
+}
+
+/** Replaces how one bill is paid in your plan ([] = back to automatic). */
+export async function savePlanRulesForBill(
+  householdId: string,
+  billId: string,
+  rules: { income_source_id: string; amount: number | null }[],
+) {
+  unwrap(await supabase.from('plan_rules').delete().eq('bill_id', billId));
+  if (rules.length) {
+    unwrap(
+      await supabase
+        .from('plan_rules')
+        .insert(rules.map((r) => ({ ...r, bill_id: billId, household_id: householdId }))),
+    );
+  }
+}
+
+/** Clears your whole plan (every bill back to automatic). */
+export async function clearPlanRules(householdId: string) {
+  unwrap(await supabase.from('plan_rules').delete().eq('household_id', householdId));
+}
+
+export async function setPlanMode(householdId: string, plan_mode: 'even' | 'mine') {
+  unwrap(await supabase.from('households').update({ plan_mode }).eq('id', householdId));
+}
+
 /** Re-runs paycheck and bill detection now (also runs after every sync). */
 export async function detectRecurring() {
   return callFunction<{

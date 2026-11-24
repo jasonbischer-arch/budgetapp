@@ -60,6 +60,10 @@ function RootNavigator() {
             name="expenses/[type]"
             options={{ presentation: 'modal', headerShown: true, title: 'Expenses' }}
           />
+          <Stack.Screen
+            name="plan-bill/[id]"
+            options={{ presentation: 'modal', headerShown: true, title: 'Pay this bill from…' }}
+          />
           <Stack.Screen name="payday" options={{ presentation: 'modal', headerShown: true, title: 'Incoming' }} />
           <Stack.Screen
             name="categories/index"

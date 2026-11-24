@@ -11,6 +11,8 @@ import {
   fetchIncomeSources,
   fetchLiabilities,
   fetchMonthlyFlows,
+  fetchPlanRules,
+  PlanRuleRow,
   FlowRow,
   IncomeSource,
   Liability,
@@ -31,6 +33,8 @@ export interface HouseholdData {
   liabilities: Liability[];
   /** Commission/bonus amounts and extra income, today through next month. */
   expected: ExpectedIncome[];
+  /** Your own paycheck plan (which paycheck pays which bill). */
+  planRules: PlanRuleRow[];
 }
 
 const EMPTY: HouseholdData = {
@@ -42,6 +46,7 @@ const EMPTY: HouseholdData = {
   bills: [],
   liabilities: [],
   expected: [],
+  planRules: [],
 };
 
 /** Everything the Overview and Plan tabs need, reloaded on focus. */
@@ -50,7 +55,7 @@ export function useHouseholdData() {
     // Keep automatic budgets at the latest 12-month average (cheap; only
     // changes categories that follow the average).
     await refreshAutoBudgets().catch(() => {});
-    const [accounts, categories, flows, firstDate, incomes, bills, liabilities, expected] = await Promise.all([
+    const [accounts, categories, flows, firstDate, incomes, bills, liabilities, expected, planRules] = await Promise.all([
       fetchAccounts(),
       fetchCategories(),
       fetchMonthlyFlows(monthStart(new Date(), -12)),
@@ -60,8 +65,9 @@ export function useHouseholdData() {
       fetchLiabilities(),
       // Through next month: the paycheck plan looks that far ahead.
       fetchExpectedIncome(today(), endOfMonth(addDays(endOfMonth(today()), 1))),
+      fetchPlanRules(),
     ]);
-    return { accounts, categories, flows, firstDate, incomes, bills, liabilities, expected };
+    return { accounts, categories, flows, firstDate, incomes, bills, liabilities, expected, planRules };
   }, EMPTY);
 }
 

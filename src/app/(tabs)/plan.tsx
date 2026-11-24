@@ -23,12 +23,15 @@ import {
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
+import { confirmAction } from '@/lib/confirm';
 import {
   Category,
   detectRecurring,
   IncomeSource,
   resetCategoryBudget,
+  clearPlanRules,
   markBudgetHelpDone,
+  setPlanMode,
   setCategoryBudgets,
   updateCategoryBudget,
 } from '@/lib/data';
@@ -46,7 +49,6 @@ import {
   categoryAverages,
   cutSuggestions,
   expenseBreakdown,
-  paycheckSplit,
   monthStart,
   periodMonths,
   spendingByCategory,
@@ -91,7 +93,7 @@ export default function PlanScreen() {
       </T>
       <Segmented options={SECTIONS} value={section} onChange={setSection} />
       <ErrorText message={error} />
-      {section === 'plan' && <PaycheckPlanView data={data} goTo={setSection} />}
+      {section === 'plan' && <PaycheckPlanView data={data} goTo={setSection} reload={reload} />}
       {section === 'bills' && <BillsView data={data} reload={reload} />}
       {section === 'income' && <IncomeView data={data} reload={reload} />}
       {section === 'budget' && <BudgetView data={data} reload={reload} />}
@@ -103,7 +105,7 @@ export default function PlanScreen() {
 // Paycheck plan: bills, then the same savings and spending money every check
 // ---------------------------------------------------------------------------
 
-function usePlan(data: HouseholdData, savingsOverride: number | null) {
+function usePlan(data: HouseholdData, mode: 'even' | 'mine') {
   return useMemo(() => {
     const from = today();
     const to = endOfMonth(addDays(endOfMonth(from), 1)); // through end of next month
@@ -114,6 +116,10 @@ function usePlan(data: HouseholdData, savingsOverride: number | null) {
         .filter((b) => b.expense_type === 'fixed')
         .map((b) => b.id),
     );
+    const rules =
+      mode === 'mine'
+        ? data.planRules.map((r) => ({ billId: r.bill_id, sourceId: r.income_source_id, amount: r.amount }))
+        : [];
     const plan = buildPaycheckPlan(
       data.incomes,
       data.bills.filter((b) => fixedIds.has(b.id)).map((b) => toBillSchedule(b, data.liabilities)),
@@ -121,33 +127,50 @@ function usePlan(data: HouseholdData, savingsOverride: number | null) {
       to,
       // Commission and other amounts you entered for upcoming paydays.
       incomeEdits(data.expected),
+      rules,
     );
-    // Typical leftover after bills: the median, so a check squeezed by a
-    // bill due right after it doesn't drag the plan down.
-    const lefts = plan.checks.map((x) => x.leftover).sort((a, b) => a - b);
-    const typicalAfterBills = lefts.length ? lefts[Math.floor(lefts.length / 2)] : 0;
-
-    // Spending money per month: the same variable categories as Variable /
-    // month (budgets where set, else the average). Variable bills aren't
-    // included here because the plan already pays them as bills.
-    const months = trailingMonths(new Date(), data.firstDate);
-    const variablePerMonth = expenseBreakdown(
-      data.flows,
-      data.categories,
-      months,
-      expenseBills(data.bills, data.accounts, data.liabilities),
-    ).variable.items.filter((i) => i.kind === 'category').reduce((s, i) => s + i.monthly, 0);
-    const checksPerMonth = data.incomes.reduce((s, x) => s + monthlyAmount(x.frequency, 1), 0);
-
-    const split = paycheckSplit({ typicalAfterBills, variablePerMonth, checksPerMonth, savingsOverride });
-    return { plan, typicalAfterBills, variablePerMonth, checksPerMonth, ...split };
-  }, [data, savingsOverride]);
+    return { plan };
+  }, [data, mode]);
 }
 
-function PaycheckPlanView({ data, goTo }: { data: HouseholdData; goTo: (s: Section) => void }) {
+function PaycheckPlanView({
+  data,
+  goTo,
+  reload,
+}: {
+  data: HouseholdData;
+  goTo: (s: Section) => void;
+  reload: () => void;
+}) {
   const c = useTheme();
-  const { household } = useAuth();
-  const p = usePlan(data, household?.savings_per_check ?? null);
+  const { household, refreshHousehold } = useAuth();
+  const mode = household?.plan_mode ?? 'even';
+  const p = usePlan(data, mode);
+  const [modeErr, setModeErr] = useState<string | null>(null);
+  const ruleCount = new Set(data.planRules.map((r) => r.bill_id)).size;
+
+  async function changeMode(next: 'even' | 'mine') {
+    if (!household || next === mode) return;
+    try {
+      await setPlanMode(household.id, next);
+      await refreshHousehold();
+      setModeErr(null);
+    } catch (e) {
+      setModeErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  function resetMine() {
+    if (!household) return;
+    confirmAction('Start your plan over?', 'Every bill goes back to being placed automatically.', 'Start over', async () => {
+      try {
+        await clearPlanRules(household.id);
+        reload();
+      } catch (e) {
+        setModeErr(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
 
   if (!data.incomes.length || !data.bills.length) {
     return (
@@ -176,19 +199,33 @@ function PaycheckPlanView({ data, goTo }: { data: HouseholdData; goTo: (s: Secti
 
   return (
     <>
+      <Segmented
+        options={[
+          { value: 'even', label: '⚖️ Even (automatic)' },
+          { value: 'mine', label: '✋ My plan' },
+        ]}
+        value={mode}
+        onChange={changeMode}
+      />
+      <ErrorText message={modeErr} />
+
       <GradientCard colors={c.gradPlan}>
         <T color={c.heroMuted} style={styles.summaryLabel}>
           LEFT ON EACH CHECK AFTER FIXED BILLS
         </T>
         <T color={c.heroText} style={styles.summaryValue}>
-          {lefts.length ? `${moneyWhole(minLeft)} – ${moneyWhole(maxLeft)}` : '—'}
+          {!lefts.length ? '—' : maxLeft - minLeft < 1 ? moneyWhole(maxLeft) : `${moneyWhole(minLeft)} – ${moneyWhole(maxLeft)}`}
         </T>
         <T color={c.heroMuted}>
-          Your fixed bills ({moneyWhole(fixedTotal)} over {p.plan.checks.length} checks) are each paid in full from one
-          check that arrives before the bill is due, arranged so every check keeps as close to the same amount as
-          possible. Only a bill bigger than a whole paycheck is split.
+          {mode === 'even'
+            ? `Your fixed bills (${moneyWhole(fixedTotal)}) are divided across your ${p.plan.checks.length} checks so every check keeps the same amount. A bill is split between checks when needed, and always paid from checks that arrive before it's due.`
+            : `Bills you've placed (${ruleCount}) are paid from the paycheck you chose. The rest are divided automatically so the other checks stay as even as possible. Tap any bill to change where it comes from.`}
         </T>
       </GradientCard>
+
+      {mode === 'mine' && ruleCount > 0 && (
+        <Button title="Start my plan over" kind="secondary" onPress={resetMine} />
+      )}
 
       {p.plan.smallIncome.length > 0 && (
         <T variant="small">
@@ -217,7 +254,7 @@ function PaycheckPlanView({ data, goTo }: { data: HouseholdData; goTo: (s: Secti
             title={new Date(month + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
           />
           {checks.map((check) => (
-            <CheckCard key={check.id} check={check} />
+            <CheckCard key={check.id} check={check} editable={mode === 'mine'} />
           ))}
         </View>
       ))}
@@ -225,7 +262,7 @@ function PaycheckPlanView({ data, goTo }: { data: HouseholdData; goTo: (s: Secti
   );
 }
 
-function CheckCard({ check }: { check: PlannedCheck }) {
+function CheckCard({ check, editable }: { check: PlannedCheck; editable: boolean }) {
   const c = useTheme();
   const left = check.leftover;
   return (
@@ -264,17 +301,29 @@ function CheckCard({ check }: { check: PlannedCheck }) {
 
       {check.bills.length === 0 && <T variant="muted">No fixed bills from this check.</T>}
       {check.bills.map((b) => (
-        <Row key={b.id} style={{ justifyContent: 'space-between' }}>
+        <Pressable
+          key={b.id}
+          disabled={!editable}
+          accessibilityRole={editable ? 'button' : undefined}
+          accessibilityLabel={editable ? `Choose how ${b.name} is paid` : undefined}
+          onPress={() => router.push({ pathname: '/plan-bill/[id]', params: { id: b.refId } })}
+          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}>
+        <Row style={{ justifyContent: 'space-between' }}>
           <View style={{ flexShrink: 1 }}>
-            <T numberOfLines={1}>{b.name}</T>
+            <T numberOfLines={1}>
+              {b.name}
+              {b.custom ? ' ✋' : ''}
+              {editable ? <T variant="small" color={c.primary}>  ✎</T> : null}
+            </T>
             <T variant="small">
               {b.split
-                ? `${money(b.amount)} of ${money(b.fullAmount)} · due ${shortDate(b.date)} · too big for one check`
+                ? `${money(b.amount)} of ${money(b.fullAmount)} · due ${shortDate(b.date)}`
                 : `Due ${shortDate(b.date)} · paid in full`}
             </T>
           </View>
           <T variant="money">−{money(b.amount)}</T>
         </Row>
+        </Pressable>
       ))}
       <Divider />
       <Row style={{ justifyContent: 'space-between' }}>
