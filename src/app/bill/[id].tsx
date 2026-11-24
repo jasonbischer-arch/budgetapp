@@ -52,12 +52,18 @@ const parseNum = (s: string) => {
 
 export default function BillEditor() {
   const c = useTheme();
-  const { id, accountId, debt, type } = useLocalSearchParams<{
-    id: string;
-    accountId?: string;
-    debt?: string;
-    type?: 'fixed' | 'variable';
-  }>();
+  const { id, accountId, debt, type, name: prefillName, amount: prefillAmount, day: prefillDay, categoryId } =
+    useLocalSearchParams<{
+      id: string;
+      accountId?: string;
+      debt?: string;
+      type?: 'fixed' | 'variable';
+      // Prefilled from a transaction you picked:
+      name?: string;
+      amount?: string;
+      day?: string;
+      categoryId?: string;
+    }>();
   const isNew = id === 'new';
   const { household } = useAuth();
 
@@ -107,6 +113,10 @@ export default function BillEditor() {
         setBalance(now != null ? String(now) : '');
         setApr(b.apr != null ? String(b.apr) : '');
         setLinked(b.account_id);
+      } else if (prefillName) {
+        setName(prefillName);
+        if (prefillAmount) setAmount(prefillAmount);
+        if (prefillDay) setDueDay(prefillDay);
       } else if (accountId) {
         const a = accts.find((x) => x.id === accountId);
         const l = liabs.find((x) => x.account_id === accountId);
@@ -115,7 +125,7 @@ export default function BillEditor() {
         if (l?.next_due_date) setDueDay(String(Number(l.next_due_date.slice(8))));
       }
     })().catch((e) => setError(String(e)));
-  }, [id, isNew, accountId]);
+  }, [id, isNew, accountId, prefillName, prefillAmount, prefillDay]);
 
   const isDebt = kind === 'debt';
   const linkedAccount = accounts.find((a) => a.id === linked);
@@ -168,7 +178,7 @@ export default function BillEditor() {
         balance_date: manualDebt ? (balanceChanged || !existing?.balance_date ? today() : existing.balance_date) : null,
         apr: isDebt ? rate : null,
         account_id: isDebt ? linked : null,
-        category_id: existing?.category_id ?? null,
+        category_id: existing?.category_id ?? categoryId ?? null,
         expense_type: expenseType,
       });
       router.back();

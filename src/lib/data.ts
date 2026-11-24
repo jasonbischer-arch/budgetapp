@@ -460,6 +460,20 @@ export async function fetchCategoryTransactions(opts: { categoryId: string | nul
   return rows.map((r) => ({ ...r, amount: Number(r.amount) }));
 }
 
+/** Money out (spending, not transfers) since a date, newest first. */
+export async function fetchSpendingSince(from: string) {
+  const rows = unwrap(
+    await supabase
+      .from('transaction_flows')
+      .select('date, amount, description, merchant, category_id')
+      .eq('flow', 'spending')
+      .gte('date', from)
+      .order('date', { ascending: false })
+      .limit(3000),
+  ) as { date: string; amount: number; description: string; merchant: string | null; category_id: string | null }[];
+  return rows.map((r) => ({ ...r, amount: Number(r.amount) }));
+}
+
 /** Re-runs paycheck and bill detection now (also runs after every sync). */
 export async function detectRecurring() {
   return callFunction<{

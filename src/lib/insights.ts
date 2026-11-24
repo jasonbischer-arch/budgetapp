@@ -153,10 +153,10 @@ export interface ExpenseItem {
 }
 
 /**
- * Fixed and variable expenses, item by item, with no double counting:
- * each bill counts at its monthly amount on its side, and each spending
- * category counts what's left of its 12-month average after the bills paid
- * from it (e.g. Utilities $300 with a $150 electric bill adds $150 more).
+ * Fixed and variable expenses, item by item, with no double counting.
+ * Fixed is exactly your fixed bills. Variable is your variable bills plus
+ * each variable category's 12-month average, less any bills paid from it
+ * (e.g. Entertainment $60 with a $20 Netflix bill adds $40).
  *
  * Pass only bills that are real spending: payments to a credit card are
  * left out by the caller, since the card's purchases are already counted.
@@ -180,7 +180,8 @@ export function expenseBreakdown(
     const rest = amount - (id ? (billsByCat.get(id) ?? 0) : 0);
     if (rest < 1) continue;
     const cat = id ? categories.find((c) => c.id === id) : undefined;
-    side[cat?.expense_type === 'fixed' ? 'fixed' : 'variable'].push({
+    if (cat?.expense_type === 'fixed') continue; // fixed = your bills only
+    side.variable.push({
       kind: 'category',
       id,
       name: cat?.name ?? 'Uncategorized',
@@ -311,4 +312,109 @@ export function paycheckSplit(opts: {
     leftToSpend: opts.typicalAfterBills - savings,
     auto: opts.savingsOverride == null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Payees you could add as bills
+// ---------------------------------------------------------------------------
+
+/** Bank-statement filler that doesn't identify who was paid. */
+const PAYEE_NOISE = new Set([
+  'ACH', 'PPD', 'CCD', 'ID', 'DES', 'INDN', 'CO', 'DIRECT', 'DIR', 'DEP', 'DEBIT', 'PURCHASE', 'POS',
+  'ELECTRONIC', 'ELEC', 'TRANSFER', 'WEB', 'ONLINE', 'PAYMENT', 'PMT', 'FROM', 'TO', 'THE', 'INC',
+  'LLC', 'CORP', 'CORPORATION', 'COMPANY', 'LTD', 'NA', 'TRN', 'REF', 'ORIG', 'NAME', 'ENTRY',
+  'DESCR', 'SEC', 'IND', 'TRACE', 'EFF', 'DATE', 'RECURRING', 'AUTOPAY', 'BILL', 'PAY', 'CARD',
+]);
+
+/** A stable key for who was paid, e.g. "ALLY" from "ALLY PAYMENT ID 123". */
+export function payeeKey(merchant: string | null, description: string): string {
+  return (merchant?.trim() || description)
+    .toUpperCase()
+    .replace(/[^A-Z ]+/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 2 && !PAYEE_NOISE.has(w))
+    .slice(0, 3)
+    .join(' ');
+}
+
+export interface PayeeGroup {
+  key: string;
+  name: string;
+  count: number;
+  /** Different months it was paid in. */
+  months: number;
+  /** Paid in 2+ months, about once or twice a month: probably a bill. */
+  recurring: boolean;
+  lastAmount: number;
+  lastDate: string;
+  /** Usual amount: the median payment. */
+  typical: number;
+  /** Usual day of the month. */
+  day: number;
+  categoryId: string | null;
+}
+
+const titleWords = (s: string) => s.toLowerCase().replace(/\b[a-z]/g, (ch) => ch.toUpperCase());
+
+/** True if a bill already covers this payee (same name or detected from it). */
+function coveredByBill(key: string, bills: { name: string; detection_key: string | null }[]) {
+  return bills.some((b) => {
+    if (b.detection_key && b.detection_key.replace(/#\d+$/, '') === key) return true;
+    const bk = payeeKey(null, b.name);
+    if (!bk) return false;
+    if (bk === key) return true;
+    const first = key.split(' ')[0];
+    return first.length >= 4 && bk.split(' ').includes(first);
+  });
+}
+
+/**
+ * Groups spending by payee so you can add one as a bill, leaving out
+ * payees that already have a bill. Likely bills first, biggest first.
+ */
+export function payeesToAdd(
+  rows: { date: string; amount: number; description: string; merchant: string | null; category_id: string | null }[],
+  bills: { name: string; detection_key: string | null }[],
+): PayeeGroup[] {
+  const groups = new Map<string, typeof rows>();
+  for (const r of rows) {
+    if (!(r.amount < 0)) continue; // money out only
+    const key = payeeKey(r.merchant, r.description);
+    if (!key) continue;
+    groups.set(key, [...(groups.get(key) ?? []), r]);
+  }
+  const out: PayeeGroup[] = [];
+  for (const [key, items] of groups) {
+    if (coveredByBill(key, bills)) continue;
+    const sorted = [...items].sort((a, b) => a.date.localeCompare(b.date));
+    const last = sorted[sorted.length - 1];
+    const amounts = sorted.map((r) => -r.amount).sort((a, b) => a - b);
+    const typical = amounts[Math.floor(amounts.length / 2)];
+    const days = new Map<number, number>();
+    for (const r of sorted) days.set(+r.date.slice(8, 10), (days.get(+r.date.slice(8, 10)) ?? 0) + 1);
+    const day = [...days.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+    const cats = new Map<string | null, number>();
+    for (const r of sorted) cats.set(r.category_id, (cats.get(r.category_id) ?? 0) + 1);
+    const months = new Set(sorted.map((r) => r.date.slice(0, 7))).size;
+    // Bills are paid about once or twice a month; a store you visit
+    // weekly isn't one.
+    out.push({
+      key,
+      name: last.merchant?.trim() || titleWords(key),
+      count: sorted.length,
+      months,
+      recurring: months >= 2 && sorted.length <= months * 2.5,
+      lastAmount: -last.amount,
+      lastDate: last.date,
+      typical: Math.round(typical * 100) / 100,
+      day,
+      categoryId: [...cats.entries()].sort((a, b) => b[1] - a[1])[0][0],
+    });
+  }
+  // Recurring: biggest first. The rest: most recent first.
+  return out.sort(
+    (a, b) =>
+      Number(b.recurring) - Number(a.recurring) ||
+      (a.recurring ? b.typical - a.typical : b.lastDate.localeCompare(a.lastDate)),
+  );
 }

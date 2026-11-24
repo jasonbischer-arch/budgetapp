@@ -53,6 +53,10 @@ function RootNavigator() {
             options={{ presentation: 'modal', headerShown: true, title: 'Paycheck' }}
           />
           <Stack.Screen
+            name="expenses/pick"
+            options={{ presentation: 'modal', headerShown: true, title: 'Add an expense' }}
+          />
+          <Stack.Screen
             name="expenses/[type]"
             options={{ presentation: 'modal', headerShown: true, title: 'Expenses' }}
           />

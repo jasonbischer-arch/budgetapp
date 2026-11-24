@@ -8,7 +8,7 @@ import { Button, Card, Divider, ErrorText, IconBubble, Row, Screen, T } from '@/
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { confirmAction } from '@/lib/confirm';
-import { deleteBill, setBillExpenseType, setCategoryExpenseType } from '@/lib/data';
+import { deleteBill, setBillExpenseType } from '@/lib/data';
 import { money, moneyWhole, ordinal } from '@/lib/format';
 import { expenseBills, useHouseholdData } from '@/lib/household-data';
 import { expenseBreakdown, ExpenseItem, trailingMonths } from '@/lib/insights';
@@ -52,6 +52,7 @@ export default function ExpensesSheet() {
   );
   const list = split[side];
   const bills = list.items.filter((i) => i.kind === 'bill');
+  // Variable also counts what you spend by category (groceries, dining...).
   const spending = list.items.filter((i) => i.kind === 'category');
 
   async function run(key: string, fn: () => Promise<void>) {
@@ -68,9 +69,7 @@ export default function ExpensesSheet() {
   }
 
   function move(item: ExpenseItem) {
-    const key = `move:${item.kind}:${item.id}`;
-    if (item.kind === 'bill') run(key, () => setBillExpenseType(item.id!, other));
-    else if (item.id) run(key, () => setCategoryExpenseType(item.id!, other));
+    if (item.kind === 'bill') run(`move:${item.kind}:${item.id}`, () => setBillExpenseType(item.id!, other));
   }
 
   function remove(item: ExpenseItem) {
@@ -102,7 +101,7 @@ export default function ExpensesSheet() {
                   ? bill.frequency === 'monthly'
                     ? `Due on the ${ordinal(bill.due_day)}`
                     : `${bill.frequency}, ${money(bill.amount ?? 0)} each`
-                  : 'Average spending not covered by a bill'}
+                  : 'Monthly average from your bank activity'}
               </T>
             </View>
           </Row>
@@ -125,7 +124,7 @@ export default function ExpensesSheet() {
               }
             />
           )}
-          {(bill || item.id) && (
+          {bill && (
             <Button
               title={`Move to ${other}`}
               kind="secondary"
@@ -157,33 +156,18 @@ export default function ExpensesSheet() {
 
       <Button
         title={`＋ Add a ${side} expense`}
-        onPress={() => router.push({ pathname: '/bill/[id]', params: { id: 'new', type: side } })}
+        onPress={() => router.push({ pathname: '/expenses/pick', params: { type: side } })}
       />
 
       <Card>
-        <T variant="heading">Bills & payments</T>
-        {bills.length === 0 && (
+        <T variant="heading">{side === 'fixed' ? 'Your fixed expenses' : 'Your variable expenses'}</T>
+        {list.items.length === 0 && (
           <T variant="muted">
-            No {side} bills yet. Add one above, or move one here from {other} expenses.
+            Nothing here yet. Add one from your bank activity above, or move one here from {other} expenses.
           </T>
         )}
-        {bills.map((item, i) => (
-          <View key={`b${item.id}`} style={{ gap: Spacing.md }}>
-            {i > 0 && <Divider />}
-            <ItemRow item={item} />
-          </View>
-        ))}
-      </Card>
-
-      <Card>
-        <T variant="heading">Everyday spending</T>
-        <T variant="small">
-          12-month average from your bank activity, by category. To change what&apos;s in a category,
-          open its transactions and recategorize them.
-        </T>
-        {spending.length === 0 && <T variant="muted">Nothing here yet.</T>}
-        {spending.map((item, i) => (
-          <View key={`c${item.id ?? 'none'}`} style={{ gap: Spacing.md }}>
+        {[...bills, ...spending].map((item, i) => (
+          <View key={`${item.kind}${item.id ?? 'none'}`} style={{ gap: Spacing.md }}>
             {i > 0 && <Divider />}
             <ItemRow item={item} />
           </View>
