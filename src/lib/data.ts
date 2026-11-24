@@ -84,7 +84,18 @@ export interface Bill {
   apr: number | null;
   account_id: string | null;
   category_id: string | null;
+  /** Managed by bill detection; editing makes it yours. */
+  auto: boolean;
+  detection_key: string | null;
+  last_paid: string | null;
+  occurrences: number | null;
+  /** Manual debts: the date `balance` was right (it pays down from there). */
+  balance_date: string | null;
+  debt_kind: 'auto_loan' | 'mortgage' | 'student_loan' | 'personal_loan' | 'other' | null;
 }
+
+/** The fields you edit on a bill. */
+export type BillInput = Omit<Bill, 'id' | 'auto' | 'detection_key' | 'last_paid' | 'occurrences'>;
 
 export interface Liability {
   account_id: string;
@@ -288,18 +299,31 @@ export async function deleteIncomeSource(src: Pick<IncomeSource, 'id' | 'detecti
 }
 
 export async function fetchBills(): Promise<Bill[]> {
-  const rows = unwrap(await supabase.from('bills').select('*').order('due_day')) as Bill[];
+  const rows = unwrap(
+    await supabase.from('bills').select('*').eq('dismissed', false).order('due_day'),
+  ) as Bill[];
   return rows.map((r) => ({ ...r, amount: num(r.amount), balance: num(r.balance), apr: num(r.apr) }));
 }
 
-export async function saveBill(householdId: string, bill: Omit<Bill, 'id'> & { id?: string }) {
+/** Saves a bill. Editing a detected bill makes it yours (detection stops changing it). */
+export async function saveBill(householdId: string, bill: BillInput & { id?: string }) {
   const { id, ...fields } = bill;
-  if (id) unwrap(await supabase.from('bills').update(fields).eq('id', id));
+  if (id) unwrap(await supabase.from('bills').update({ ...fields, auto: false }).eq('id', id));
   else unwrap(await supabase.from('bills').insert({ ...fields, household_id: householdId }));
 }
 
-export async function deleteBill(id: string) {
-  unwrap(await supabase.from('bills').delete().eq('id', id));
+/** Deletes a bill; a detected one is hidden so detection won't add it back. */
+export async function deleteBill(bill: Pick<Bill, 'id' | 'detection_key'>) {
+  if (bill.detection_key) unwrap(await supabase.from('bills').update({ dismissed: true }).eq('id', bill.id));
+  else unwrap(await supabase.from('bills').delete().eq('id', bill.id));
+}
+
+/** Re-runs paycheck and bill detection now (also runs after every sync). */
+export async function detectRecurring() {
+  return callFunction<{
+    paychecks?: { found: number; added: number };
+    bills?: { found: number; added: number };
+  }>('paychecks-detect');
 }
 
 export async function fetchLiabilities(): Promise<Liability[]> {

@@ -16,7 +16,8 @@ import {
   useQuery,
 } from './data';
 import { monthStart } from './insights';
-import { BillSchedule, PaySchedule } from './schedule';
+import { currentBalance, payoff } from './debt';
+import { BillSchedule, PaySchedule, today } from './schedule';
 
 export interface HouseholdData {
   accounts: Account[];
@@ -86,12 +87,27 @@ export function toBillSchedule(bill: Bill, liabilities: Liability[]): BillSchedu
   };
 }
 
-/** Balance and APR for a bill: from the linked account when there is one. */
+/**
+ * Balance, APR and payoff for a debt. Connected accounts use the lender's
+ * balance; debts you entered pay down month by month from the balance you
+ * gave (same math as net worth).
+ */
 export function debtDetails(bill: Bill, accounts: Account[], liabilities: Liability[]) {
   const account = bill.account_id ? accounts.find((a) => a.id === bill.account_id) : undefined;
   const l = bill.account_id ? liabilities.find((x) => x.account_id === bill.account_id) : undefined;
-  const balance = account ? Math.abs(account.balance_ledger ?? 0) : bill.balance;
+  const payment = bill.amount ?? l?.minimum_payment ?? null;
   const apr = bill.apr ?? l?.apr ?? null;
+  const balance = account
+    ? Math.abs(account.balance_ledger ?? 0)
+    : currentBalance({
+        balance: bill.balance,
+        apr: bill.apr,
+        payment: bill.amount,
+        balanceDate: bill.balance_date,
+        dueDay: bill.due_day,
+        today: today(),
+      });
   const monthlyInterest = balance != null && apr != null ? (balance * apr) / 100 / 12 : null;
-  return { account, balance, apr, monthlyInterest, linked: !!account };
+  const plan = balance != null && payment != null && apr != null ? payoff(balance, apr, payment, today()) : null;
+  return { account, balance, apr, payment, monthlyInterest, payoff: plan, linked: !!account };
 }

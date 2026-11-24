@@ -3,7 +3,9 @@ import { useMemo, useState } from 'react';
 import { Pressable, View } from 'react-native';
 
 import { MonthPicker, useMonth } from '@/components/month-picker';
-import { Card, Divider, ErrorText, Input, Row, Screen, T } from '@/components/ui';
+import { Card, Divider, ErrorText, IconBubble, Input, Row, Screen, T } from '@/components/ui';
+import { Spacing } from '@/constants/theme';
+import { categoryEmoji } from '@/lib/visuals';
 import { useTheme } from '@/hooks/use-theme';
 import {
   fetchAccounts,
@@ -72,27 +74,22 @@ export default function Transactions() {
                 onPress={() => router.push({ pathname: '/transaction/[id]', params: { id: t.id } })}
                 style={({ pressed }) => [{ paddingVertical: 10 }, pressed && { opacity: 0.6 }]}>
                 <Row style={{ justifyContent: 'space-between' }}>
-                  <View style={{ flexShrink: 1, gap: 2 }}>
-                    <T numberOfLines={1} style={t.excluded ? { opacity: 0.5 } : undefined}>
-                      {t.merchant || t.description}
-                    </T>
-                    <Row style={{ gap: 6 }}>
-                      <View
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: 4,
-                          backgroundColor: cat?.color ?? c.border,
-                        }}
-                      />
-                      <T variant="small" numberOfLines={1}>
-                        {cat?.name ?? 'Uncategorized'} · {shortDate(t.date)}
-                        {acct ? ` · ${acct.name}` : ''}
-                        {t.status === 'pending' ? ' · Pending' : ''}
-                        {t.excluded ? ' · Excluded' : ''}
+                  <Row style={{ gap: Spacing.sm, flexShrink: 1 }}>
+                    <IconBubble emoji={categoryEmoji(cat)} color={cat?.color ?? c.textMuted} />
+                    <View style={{ flexShrink: 1, gap: 2 }}>
+                      <T numberOfLines={1} style={t.excluded ? { opacity: 0.5 } : undefined}>
+                        {t.merchant || t.description}
                       </T>
-                    </Row>
-                  </View>
+                      <Row style={{ gap: 6 }}>
+                        <T variant="small" numberOfLines={1}>
+                          {cat?.name ?? 'Uncategorized'} · {shortDate(t.date)}
+                          {acct ? ` · ${acct.name}` : ''}
+                          {t.status === 'pending' ? ' · Pending' : ''}
+                          {t.excluded ? ' · Excluded' : ''}
+                        </T>
+                      </Row>
+                    </View>
+                  </Row>
                   <T variant="money" color={t.amount > 0 ? c.positive : undefined}>
                     {t.amount > 0 ? '+' : ''}
                     {money(t.amount)}

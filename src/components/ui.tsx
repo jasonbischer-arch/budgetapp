@@ -12,10 +12,12 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { tint } from '@/lib/visuals';
 
 export function Screen({
   children,
@@ -160,17 +162,32 @@ export function Stat({
   value,
   sub,
   color,
+  accent,
+  icon,
   style,
 }: {
   label: string;
   value: string;
   sub?: string;
   color?: string;
+  /** Tints the tile with this color. */
+  accent?: string;
+  icon?: string;
   style?: ViewStyle;
 }) {
   return (
-    <Card style={{ flex: 1, gap: 2, padding: Spacing.md, ...style }}>
-      <T variant="small">{label}</T>
+    <Card
+      style={{
+        flex: 1,
+        gap: 2,
+        padding: Spacing.md,
+        ...(accent ? { backgroundColor: tint(accent, 0.1), borderColor: tint(accent, 0.25) } : null),
+        ...style,
+      }}>
+      <T variant="small">
+        {icon ? `${icon} ` : ''}
+        {label}
+      </T>
       <T
         variant="money"
         color={color}
@@ -181,6 +198,46 @@ export function Stat({
       </T>
       {sub ? <T variant="small">{sub}</T> : null}
     </Card>
+  );
+}
+
+/** A highlight card with a diagonal gradient. */
+export function GradientCard({
+  colors,
+  children,
+  style,
+}: {
+  colors: readonly string[];
+  children: ReactNode;
+  style?: ViewStyle;
+}) {
+  return (
+    <LinearGradient
+      colors={colors as unknown as [string, string, ...string[]]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={[{ borderRadius: Radius.lg + 4, padding: Spacing.xl, gap: Spacing.xs }, style]}>
+      {children}
+    </LinearGradient>
+  );
+}
+
+/** An emoji in a softly tinted circle. */
+export function IconBubble({ emoji, color, size = 36 }: { emoji: string; color: string; size?: number }) {
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: tint(color, 0.16),
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+      importantForAccessibility="no-hide-descendants"
+      accessibilityElementsHidden>
+      <Text style={{ fontSize: size * 0.5 }}>{emoji}</Text>
+    </View>
   );
 }
 
@@ -207,6 +264,8 @@ export function MeterRow({
   figure,
   detail,
   limit,
+  color,
+  icon,
 }: {
   label: string;
   value: number;
@@ -214,16 +273,23 @@ export function MeterRow({
   figure: string;
   detail?: string;
   limit?: number | null;
+  /** Bar color (defaults to the app's single bar hue). */
+  color?: string;
+  /** Emoji shown before the label. */
+  icon?: string;
 }) {
   const c = useTheme();
   const over = limit != null && limit > 0 && value > limit;
   const scale = Math.max(max, limit ?? 0) || 1;
   return (
     <View style={{ gap: 6 }} accessible accessibilityLabel={`${label}: ${figure}${detail ? `, ${detail}` : ''}`}>
-      <Row style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <T numberOfLines={1} style={{ flexShrink: 1 }}>
-          {label}
-        </T>
+      <Row style={{ justifyContent: 'space-between' }}>
+        <Row style={{ gap: Spacing.sm, flexShrink: 1 }}>
+          {icon && <IconBubble emoji={icon} color={color ?? c.bar} size={30} />}
+          <T numberOfLines={1} style={{ flexShrink: 1 }}>
+            {label}
+          </T>
+        </Row>
         <T variant="money" color={over ? c.negative : undefined}>
           {figure}
         </T>
@@ -233,7 +299,7 @@ export function MeterRow({
           style={{
             width: `${Math.min(1, value / scale) * 100}%`,
             height: '100%',
-            backgroundColor: over ? c.negative : c.bar,
+            backgroundColor: over ? c.negative : (color ?? c.bar),
             borderRadius: 4,
           }}
         />

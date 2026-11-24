@@ -7,6 +7,7 @@ import {
   Card,
   Divider,
   ErrorText,
+  GradientCard,
   MeterRow,
   Row,
   Screen,
@@ -21,6 +22,7 @@ import { useAuth } from '@/lib/auth';
 import { money, moneyWhole, shortDate } from '@/lib/format';
 import { balances, toBillSchedule, useHouseholdData } from '@/lib/household-data';
 import { monthlyAmount } from '@/lib/schedule';
+import { categoryEmoji } from '@/lib/visuals';
 import {
   expenseSplit,
   periodMonths,
@@ -100,7 +102,7 @@ export default function Overview() {
           <Button title="Connect a bank" onPress={() => router.push('/accounts')} />
         </Card>
       ) : (
-        <View style={[styles.hero, { backgroundColor: c.hero }]}>
+        <GradientCard colors={c.gradMoney}>
           <T color={c.heroMuted} style={styles.heroLabel}>
             CASH IN CHECKING & SAVINGS
           </T>
@@ -131,7 +133,7 @@ export default function Overview() {
               {cardAccounts.map((a) => (
                 <Row key={a.id} style={{ justifyContent: 'space-between' }}>
                   <T color={c.heroMuted} style={styles.heroSmall} numberOfLines={1}>
-                    {a.name}
+                    💳 {a.name}
                     {a.last_four ? ` ••${a.last_four}` : ''}
                   </T>
                   <T color={c.heroText} style={[styles.heroSmall, { fontWeight: '700', fontVariant: ['tabular-nums'] }]}>
@@ -141,24 +143,26 @@ export default function Overview() {
               ))}
             </View>
           )}
-        </View>
+        </GradientCard>
       )}
 
       {/* Trailing 12-month averages */}
       <SectionHeader title="Monthly average" />
       <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
-        <Stat label="Income" value={moneyWhole(avg.income)} color={c.positive} />
-        <Stat label="Expenses" value={moneyWhole(avg.spent)} />
-        <Stat label="Saved" value={moneyWhole(avg.saved)} />
+        <Stat label="Income" icon="💰" accent="#1BAF7A" value={moneyWhole(avg.income)} color={c.positive} />
+        <Stat label="Expenses" icon="🧾" accent="#EB6834" value={moneyWhole(avg.spent)} />
+        <Stat label="Saved" icon="🐷" accent="#2A78D6" value={moneyWhole(avg.saved)} />
       </Row>
       {avg.months > 0 && (
         <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
           <Stat
-            label="Fixed expenses"
+            label="Fixed"
+            icon="📌"
+            accent="#6250D6"
             value={moneyWhole(split.fixed)}
             sub={split.fromBills ? 'from your bills' : 'rent, utilities, loans…'}
           />
-          <Stat label="Variable expenses" value={moneyWhole(split.variable)} sub="groceries, dining…" />
+          <Stat label="Variable" icon="🛒" accent="#EDA100" value={moneyWhole(split.variable)} sub="groceries, dining…" />
         </Row>
       )}
       <T variant="small" style={{ marginTop: -Spacing.sm }}>
@@ -235,10 +239,12 @@ export default function Overview() {
       <SectionHeader title="Income & spending" />
       <Segmented options={PERIODS} value={period} onChange={setPeriod} />
       <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
-        <Stat label="Income" value={moneyWhole(totals.income)} color={c.positive} />
-        <Stat label="Spent" value={moneyWhole(totals.spent)} />
+        <Stat label="Income" icon="💰" accent="#1BAF7A" value={moneyWhole(totals.income)} color={c.positive} />
+        <Stat label="Spent" icon="💸" accent="#EB6834" value={moneyWhole(totals.spent)} />
         <Stat
           label="Net"
+          icon={totals.net >= 0 ? '📈' : '📉'}
+          accent={totals.net >= 0 ? '#2A78D6' : '#E34948'}
           value={moneyWhole(totals.net)}
           color={totals.net >= 0 ? c.positive : c.negative}
         />
@@ -249,7 +255,7 @@ export default function Overview() {
             <T style={{ fontWeight: '700' }} color={c.primary}>
               {moneyWhole(totals.saved)}
             </T>{' '}
-            moved to savings & investments. That&apos;s not counted as spending.
+            moved to savings & investments 🐷. That&apos;s not counted as spending.
           </T>
         </Card>
       )}
@@ -257,6 +263,17 @@ export default function Overview() {
       <Card>
         <T variant="heading">Spending by category</T>
         {byCategory.length === 0 && <T variant="muted">No spending in this period.</T>}
+        {byCategory.length > 0 && (
+          // Where the money went, at a glance: one block per category.
+          <View style={styles.mix} accessibilityLabel="Share of spending by category">
+            {byCategory.map(({ categoryId, amount }) => (
+              <View
+                key={categoryId ?? 'none'}
+                style={{ flex: amount, backgroundColor: (categoryId && catById.get(categoryId)?.color) || c.textMuted }}
+              />
+            ))}
+          </View>
+        )}
         {byCategory.map(({ categoryId, amount }) => {
           const cat = categoryId ? catById.get(categoryId) : undefined;
           const months = Number(period);
@@ -264,6 +281,8 @@ export default function Overview() {
           return (
             <MeterRow
               key={categoryId ?? 'none'}
+              icon={categoryEmoji(cat)}
+              color={cat?.color ?? c.textMuted}
               label={cat?.name ?? 'Uncategorized'}
               value={amount}
               max={maxCat}
@@ -285,7 +304,7 @@ export default function Overview() {
 }
 
 const styles = StyleSheet.create({
-  hero: { borderRadius: Radius.lg + 4, padding: Spacing.xl, gap: Spacing.xs },
+  mix: { flexDirection: 'row', height: 12, borderRadius: 6, overflow: 'hidden', gap: 2 },
   heroLabel: { fontSize: 12, fontWeight: '700', letterSpacing: 0.8 },
   heroValue: { fontSize: 40, fontWeight: '800', fontVariant: ['tabular-nums'] },
   heroDivider: { height: StyleSheet.hairlineWidth, opacity: 0.4, marginVertical: Spacing.md },

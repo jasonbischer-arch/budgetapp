@@ -9,6 +9,8 @@ import {
   Card,
   Divider,
   ErrorText,
+  GradientCard,
+  IconBubble,
   Input,
   MeterRow,
   Row,
@@ -23,6 +25,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
 import {
   Category,
+  detectRecurring,
   IncomeSource,
   resetCategoryBudget,
   saveSavingsPerCheck,
@@ -56,6 +59,7 @@ import {
   today,
 } from '@/lib/schedule';
 import { callFunction } from '@/lib/supabase';
+import { billEmoji, categoryEmoji } from '@/lib/visuals';
 
 type Section = 'plan' | 'bills' | 'income' | 'budget';
 const SECTIONS: { value: Section; label: string }[] = [
@@ -161,7 +165,7 @@ function PaycheckPlanView({ data, goTo }: { data: HouseholdData; goTo: (s: Secti
 
   return (
     <>
-      <View style={[styles.summary, { backgroundColor: c.hero }]}>
+      <GradientCard colors={c.gradPlan}>
         <T color={c.heroMuted} style={styles.summaryLabel}>
           EVERY PAYCHECK
         </T>
@@ -183,7 +187,7 @@ function PaycheckPlanView({ data, goTo }: { data: HouseholdData; goTo: (s: Secti
           Bills come out first, from a check that arrives before each is due. Then every check
           saves the same amount and leaves the same amount to spend.
         </T>
-      </View>
+      </GradientCard>
 
       <Card>
         <Row style={{ justifyContent: 'space-between' }}>
@@ -394,6 +398,29 @@ function BillsView({ data, reload }: { data: HouseholdData; reload: () => void }
   const withDetails = new Set(data.liabilities.map((l) => l.account_id));
   const missingDetailsItem = debtAccounts.find((a) => !withDetails.has(a.id))?.item_id;
 
+  const [checking, setChecking] = useState(false);
+  const [found, setFound] = useState<string | null>(null);
+  async function checkBills() {
+    setChecking(true);
+    setErr(null);
+    setFound(null);
+    try {
+      const r = await detectRecurring();
+      const n = r.bills?.found ?? 0;
+      const added = r.bills?.added ?? 0;
+      setFound(
+        n === 0 && added === 0
+          ? 'No regular monthly payments found yet. They show up after about 3 months of history.'
+          : `Found ${n} regular payment${n === 1 ? '' : 's'}${added ? `, added ${added} new` : ''}.`,
+      );
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChecking(false);
+    }
+  }
+
   async function allowDebtDetails(itemId: string) {
     setBusy(true);
     setErr(null);
@@ -413,10 +440,25 @@ function BillsView({ data, reload }: { data: HouseholdData; reload: () => void }
   return (
     <>
       <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
-        <Stat label="Bills / month" value={moneyWhole(monthlyBills)} />
-        <Stat label="Total debt" value={moneyWhole(totalDebt)} />
-        <Stat label="Interest / mo" value={moneyWhole(interest)} color={interest > 0 ? c.negative : undefined} />
+        <Stat label="Bills / mo" icon="🧾" accent="#2A78D6" value={moneyWhole(monthlyBills)} />
+        <Stat label="Debt" icon="🏦" accent="#6250D6" value={moneyWhole(totalDebt)} />
+        <Stat
+          label="Interest"
+          icon="🔥"
+          accent="#E34948"
+          value={moneyWhole(interest)}
+          sub="per month"
+          color={interest > 0 ? c.negative : undefined}
+        />
       </Row>
+
+      <Row style={{ gap: Spacing.sm }}>
+        <View style={{ flex: 1 }}>
+          <Button title="+ Add a bill or monthly payment" onPress={() => router.push('/bill/new')} />
+        </View>
+      </Row>
+      <Button title="🔍 Find bills in my bank activity" kind="secondary" loading={checking} onPress={checkBills} />
+      {found && <T variant="small">{found}</T>}
 
       {highestApr && (
         <Card style={{ backgroundColor: c.primarySoft, borderColor: c.primarySoft, padding: Spacing.md }}>
@@ -429,7 +471,7 @@ function BillsView({ data, reload }: { data: HouseholdData; reload: () => void }
         </Card>
       )}
 
-      <SectionHeader title="Bills & debts" action="+ Add bill" onAction={() => router.push('/bill/new')} />
+      <SectionHeader title="Bills & debts" action="+ Add" onAction={() => router.push('/bill/new')} />
       <Card>
         {rows.length === 0 && (
           <T variant="muted">
@@ -444,25 +486,59 @@ function BillsView({ data, reload }: { data: HouseholdData; reload: () => void }
               onPress={() => router.push({ pathname: '/bill/[id]', params: { id: bill.id } })}
               style={({ pressed }) => [{ gap: 4 }, pressed && { opacity: 0.6 }]}>
               <Row style={{ justifyContent: 'space-between' }}>
-                <Row style={{ gap: 6, flexShrink: 1 }}>
-                  <T numberOfLines={1} style={{ flexShrink: 1, fontWeight: '600' }}>
-                    {bill.name}
-                  </T>
-                  {bill.is_debt && <Badge text="DEBT" tone="warning" />}
-                  {debt.linked && <Badge text="SYNCED" tone="primary" />}
+                <Row style={{ gap: Spacing.sm, flexShrink: 1 }}>
+                  <IconBubble
+                    emoji={billEmoji(
+                      { ...bill, account_type: debt.account?.type },
+                      data.categories.find((k) => k.id === bill.category_id),
+                    )}
+                    color={bill.is_debt ? '#6250D6' : '#2A78D6'}
+                  />
+                  <View style={{ flexShrink: 1, gap: 2 }}>
+                    <Row style={{ gap: 6, flexWrap: 'wrap' }}>
+                      <T numberOfLines={1} style={{ flexShrink: 1, fontWeight: '600' }}>
+                        {bill.name}
+                      </T>
+                      {bill.is_debt && <Badge text="DEBT" tone="warning" />}
+                      {debt.linked && <Badge text="SYNCED" tone="primary" />}
+                      {bill.auto && <Badge text="AUTO" tone="primary" />}
+                    </Row>
+                    <T variant="small">
+                      {frequencyLabel(bill.frequency, bill.due_day, bill.due_month)}
+                      {bill.amount == null && debt.linked ? ' · minimum payment' : ''}
+                    </T>
+                  </View>
                 </Row>
                 <T variant="money">{money(schedule.amount)}</T>
               </Row>
-              <T variant="small">
-                {frequencyLabel(bill.frequency, bill.due_day, bill.due_month)}
-                {bill.amount == null && debt.linked ? ' · minimum payment' : ''}
-              </T>
               {bill.is_debt && (
-                <T variant="small">
-                  Balance {debt.balance != null ? money(debt.balance) : '—'}
-                  {debt.apr != null ? ` · ${debt.apr}% APR` : ''}
-                  {debt.monthlyInterest != null ? ` · ~${money(debt.monthlyInterest)} interest/mo` : ''}
-                </T>
+                <View style={{ paddingLeft: 44, gap: 4 }}>
+                  <T variant="small">
+                    Owe {debt.balance != null ? money(debt.balance) : '— (add the balance)'}
+                    {debt.apr != null ? ` · ${debt.apr}% APR` : debt.linked ? '' : ' · add the rate'}
+                  </T>
+                  {debt.payoff && debt.payoff.months != null && debt.balance != null && debt.balance > 0 && (
+                    <>
+                      <T variant="small" style={{ fontWeight: '700' }} color={c.text}>
+                        🏁 Paid off{' '}
+                        {new Date(debt.payoff.payoffDate + '-01T12:00:00').toLocaleDateString('en-US', {
+                          month: 'short',
+                          year: 'numeric',
+                        })}{' '}
+                        · {debt.payoff.months} payments to go
+                      </T>
+                      <T variant="small">
+                        {money(debt.payoff.nextPrincipal)} of the next payment lowers the balance;{' '}
+                        {money(debt.payoff.nextInterest)} is interest. ~{money(debt.payoff.interest)} interest left.
+                      </T>
+                    </>
+                  )}
+                  {debt.payoff && debt.payoff.months == null && (
+                    <T variant="small" color={c.negative}>
+                      The payment doesn&apos;t cover the interest; this balance won&apos;t go down.
+                    </T>
+                  )}
+                </View>
               )}
             </Pressable>
           </View>
@@ -563,11 +639,13 @@ function IncomeView({ data, reload }: { data: HouseholdData; reload: () => void 
     setErr(null);
     setResult(null);
     try {
-      const r = await callFunction<{ found: number; added: number }>('paychecks-detect');
+      const r = await detectRecurring();
+      const n = r.paychecks?.found ?? 0;
+      const added = r.paychecks?.added ?? 0;
       setResult(
-        r.found === 0
+        n === 0
           ? 'No regular paychecks found in the last 7 months of deposits.'
-          : `Found ${r.found} paycheck${r.found === 1 ? '' : 's'}${r.added ? `, added ${r.added} new` : ''}.`,
+          : `Found ${n} paycheck${n === 1 ? '' : 's'}${added ? `, added ${added} new` : ''}.`,
       );
       reload();
     } catch (e) {
@@ -580,8 +658,8 @@ function IncomeView({ data, reload }: { data: HouseholdData; reload: () => void 
   return (
     <>
       <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
-        <Stat label="Expected / month" value={moneyWhole(monthly)} color={c.positive} />
-        <Stat label="Paychecks" value={String(data.incomes.length)} />
+        <Stat label="Expected / month" icon="💰" accent="#1BAF7A" value={moneyWhole(monthly)} color={c.positive} />
+        <Stat label="Paychecks" icon="🗓️" accent="#2A78D6" value={String(data.incomes.length)} />
       </Row>
 
       <Card style={{ backgroundColor: c.primarySoft, borderColor: c.primarySoft, padding: Spacing.md }}>
@@ -590,7 +668,7 @@ function IncomeView({ data, reload }: { data: HouseholdData; reload: () => void 
           you, the average amount, and the days they land, including when a weekend payday comes
           early.
         </T>
-        <Button title="Check deposits now" kind="secondary" loading={checking} onPress={checkNow} />
+        <Button title="🔍 Check deposits now" kind="secondary" loading={checking} onPress={checkNow} />
         {result && <T variant="small">{result}</T>}
       </Card>
 
@@ -613,6 +691,7 @@ function IncomeView({ data, reload }: { data: HouseholdData; reload: () => void 
                 style={({ pressed }) => [{ gap: 4 }, pressed && { opacity: 0.6 }]}>
                 <Row style={{ justifyContent: 'space-between' }}>
                   <Row style={{ gap: 6, flexShrink: 1 }}>
+                    <IconBubble emoji="💰" color="#1BAF7A" size={30} />
                     <T style={{ fontWeight: '600', flexShrink: 1 }} numberOfLines={1}>
                       {src.name}
                     </T>
@@ -698,10 +777,12 @@ function BudgetView({ data, reload }: { data: HouseholdData; reload: () => void 
       <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
         <Stat
           label="Fixed / month"
+          icon="📌"
+          accent="#6250D6"
           value={moneyWhole(split.fixed)}
           sub={split.fromBills ? 'from your bills' : 'rent, utilities, loans…'}
         />
-        <Stat label="Variable / month" value={moneyWhole(split.variable)} sub="groceries, dining…" />
+        <Stat label="Variable / month" icon="🛒" accent="#EDA100" value={moneyWhole(split.variable)} sub="groceries, dining…" />
       </Row>
       <T variant="small" style={{ marginTop: -Spacing.sm }}>
         Monthly averages over {months.size || 0} complete month{months.size === 1 ? '' : 's'} of bank history.
@@ -729,7 +810,9 @@ function BudgetView({ data, reload }: { data: HouseholdData; reload: () => void 
                 <View key={x.categoryId} style={{ gap: 4 }}>
                   {i > 0 && <Divider />}
                   <Row style={{ justifyContent: 'space-between', marginTop: i > 0 ? Spacing.sm : 0 }}>
-                    <T style={{ fontWeight: '600' }}>{x.name}</T>
+                    <T style={{ fontWeight: '600' }}>
+                      {categoryEmoji(data.categories.find((k) => k.id === x.categoryId))} {x.name}
+                    </T>
                     <T variant="money" color={c.positive}>
                       save {moneyWhole(x.savings)}/mo
                     </T>
@@ -785,7 +868,10 @@ function BudgetView({ data, reload }: { data: HouseholdData; reload: () => void 
           .filter((cat) => (avg.get(cat.id) ?? 0) > 0)
           .map((cat) => (
             <Row key={cat.id} style={{ justifyContent: 'space-between' }}>
-              <T>{cat.name}</T>
+              <Row style={{ gap: Spacing.sm }}>
+                <IconBubble emoji={categoryEmoji(cat)} color={cat.color} size={30} />
+                <T>{cat.name}</T>
+              </Row>
               <T variant="money">{money(avg.get(cat.id) ?? 0)}</T>
             </Row>
           ))}
@@ -814,7 +900,8 @@ function BudgetRow({
       {index > 0 && <Divider />}
       <Row style={{ justifyContent: 'space-between' }}>
         <View style={{ flex: 1, gap: 2 }}>
-          <Row style={{ gap: 6 }}>
+          <Row style={{ gap: Spacing.sm }}>
+            <IconBubble emoji={categoryEmoji(cat)} color={cat.color} size={30} />
             <T>{cat.name}</T>
             {cat.budget_auto && cat.monthly_budget != null && <Badge text="AUTO" tone="primary" />}
           </Row>
@@ -831,7 +918,7 @@ function BudgetRow({
               width: `${Math.min(1, spent / cat.monthly_budget) * 100}%`,
               height: '100%',
               borderRadius: 4,
-              backgroundColor: spent > cat.monthly_budget ? c.negative : c.bar,
+              backgroundColor: spent > cat.monthly_budget ? c.negative : cat.color,
             }}
           />
         </View>

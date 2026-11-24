@@ -8,6 +8,7 @@ import {
   TransactionsSyncResponse,
 } from "./plaid.ts";
 import { daysAgo, detectPaychecks } from "./paychecks.ts";
+import { detectBills, matchLoanAccount } from "./bills-detect.ts";
 
 // ---------------------------------------------------------------------------
 // HTTP helpers
@@ -405,12 +406,133 @@ export async function detectPaychecksForHousehold(admin: SupabaseClient, househo
   return { found: found.length, added, updated };
 }
 
-/** Runs detection without letting a failure break the caller (e.g. a sync). */
+// ---------------------------------------------------------------------------
+// Bill / monthly payment detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Finds regular monthly payments out of checking and keeps the household's
+ * bills in step (same rules as paychecks: auto ones follow the bank, edited
+ * ones keep your changes, deleted ones stay hidden). Also tracks every
+ * connected loan and credit card as a debt.
+ */
+export async function detectBillsForHousehold(admin: SupabaseClient, householdId: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data: accounts, error: aErr } = await admin
+    .from("accounts")
+    .select("id, name, institution_name, type, subtype, hidden")
+    .eq("household_id", householdId);
+  if (aErr) throw aErr;
+  const checking = (accounts ?? []).filter((a) => a.type === "depository").map((a) => a.id);
+  const debtAccounts = (accounts ?? []).filter((a) => (a.type === "loan" || a.type === "credit") && !a.hidden);
+
+  const { data: rows, error } = checking.length
+    ? await admin
+      .from("transaction_flows")
+      .select("date, amount, description, merchant, category_detailed, category_id")
+      .eq("household_id", householdId)
+      .eq("flow", "spending")
+      .in("account_id", checking)
+      .gte("date", daysAgo(today, 210))
+    : { data: [], error: null };
+  if (error) throw error;
+
+  const found = detectBills(
+    (rows ?? []).map((r) => ({ ...r, amount: -Number(r.amount) })),
+    today,
+  );
+
+  const { data: existing } = await admin
+    .from("bills")
+    .select("id, auto, dismissed, detection_key, account_id, amount, due_day")
+    .eq("household_id", householdId);
+  const bills = existing ?? [];
+  const { data: liabilities } = await admin
+    .from("account_liabilities")
+    .select("account_id, minimum_payment, next_due_date")
+    .eq("household_id", householdId);
+
+  let added = 0;
+  let updated = 0;
+  const trackedAccounts = new Set(bills.filter((b) => b.account_id && !b.dismissed).map((b) => b.account_id));
+
+  for (const b of found) {
+    const match = bills.find((x) => x.detection_key === b.key);
+    const stats = { last_paid: b.last_paid, occurrences: b.occurrences };
+    if (match) {
+      if (match.dismissed) continue;
+      const fields = match.auto
+        ? { ...stats, amount: b.amount, due_day: b.due_day, is_debt: b.is_debt, debt_kind: b.debt_kind }
+        : stats;
+      const { error: e } = await admin.from("bills").update(fields).eq("id", match.id);
+      if (!e) updated++;
+      continue;
+    }
+    if (!b.active) continue;
+    // Already entered by hand? (similar amount, due within 3 days)
+    const covered = bills.some((x) =>
+      !x.detection_key && !x.dismissed && x.amount != null &&
+      Math.abs(Number(x.amount) - b.amount) <= 0.1 * b.amount && Math.abs(x.due_day - b.due_day) <= 3
+    );
+    if (covered) continue;
+    const accountId = b.is_debt ? matchLoanAccount(b.key, debtAccounts, b.debt_kind) : null;
+    if (accountId && trackedAccounts.has(accountId)) continue; // that loan is already a bill
+    const { error: e } = await admin.from("bills").insert({
+      household_id: householdId,
+      name: b.name,
+      amount: b.amount,
+      frequency: "monthly",
+      due_day: b.due_day,
+      is_debt: b.is_debt,
+      debt_kind: b.debt_kind,
+      account_id: accountId,
+      category_id: b.category_id,
+      auto: true,
+      detection_key: b.key,
+      ...stats,
+    });
+    if (e) console.error("adding detected bill failed:", e.message);
+    else {
+      added++;
+      if (accountId) trackedAccounts.add(accountId);
+    }
+  }
+
+  // Every connected loan and credit card is a debt: track any that aren't yet.
+  for (const a of debtAccounts) {
+    const key = `ACCOUNT:${a.id}`;
+    if (trackedAccounts.has(a.id) || bills.some((x) => x.detection_key === key)) continue;
+    const l = (liabilities ?? []).find((x) => x.account_id === a.id);
+    const { error: e } = await admin.from("bills").insert({
+      household_id: householdId,
+      name: a.name,
+      amount: null, // the bank's minimum payment
+      frequency: "monthly",
+      due_day: l?.next_due_date ? Number(String(l.next_due_date).slice(8, 10)) : 1,
+      is_debt: true,
+      debt_kind: a.subtype === "auto" ? "auto_loan" : a.subtype === "mortgage" ? "mortgage"
+        : a.subtype === "student" ? "student_loan" : a.type === "loan" ? "personal_loan" : null,
+      account_id: a.id,
+      auto: true,
+      detection_key: key,
+    });
+    if (!e) added++;
+  }
+  return { found: found.length, added, updated };
+}
+
+/** Paychecks and bills, without letting a failure break the caller (e.g. a sync). */
 export async function detectPaychecksSafely(admin: SupabaseClient, householdId: string) {
+  const result: { paychecks?: unknown; bills?: unknown } = {};
   try {
-    return await detectPaychecksForHousehold(admin, householdId);
+    result.paychecks = await detectPaychecksForHousehold(admin, householdId);
   } catch (e) {
     console.error("paycheck detection failed:", e instanceof Error ? e.message : e);
-    return null;
   }
+  try {
+    result.bills = await detectBillsForHousehold(admin, householdId);
+  } catch (e) {
+    console.error("bill detection failed:", e instanceof Error ? e.message : e);
+  }
+  return result;
 }

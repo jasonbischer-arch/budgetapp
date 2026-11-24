@@ -15,7 +15,11 @@ export const Colors = {
     // Highlight card at the top of the Overview.
     hero: '#0B4F4A',
     heroText: '#FFFFFF',
-    heroMuted: '#A7D3CE',
+    heroMuted: '#C9EAE5',
+    // Gradient pairs for highlight cards.
+    gradMoney: ['#0B4F4A', '#14857A', '#1BAF7A'],
+    gradPlan: ['#1E3A8A', '#2A78D6', '#14857A'],
+    gradWorth: ['#3B2A8F', '#6250D6', '#2A78D6'],
     // One hue for magnitude bars (spending by category, leftovers).
     bar: '#14857A',
     // Two identity colors that pass color-blind checks side by side
@@ -42,7 +46,10 @@ export const Colors = {
     primarySoft: '#123330',
     hero: '#0F3D39',
     heroText: '#F0FDFA',
-    heroMuted: '#8CC7BF',
+    heroMuted: '#B5DCD6',
+    gradMoney: ['#0B3B37', '#106A61', '#13875F'],
+    gradPlan: ['#172E6B', '#1F5FAE', '#106A61'],
+    gradWorth: ['#2B1F6B', '#4A3BB0', '#1F5FAE'],
     bar: '#2BB5A4',
     accent: '#3987E5',
     saveColor: '#199E70',
@@ -55,7 +62,9 @@ export const Colors = {
   },
 } as const;
 
-export type Palette = { [K in keyof typeof Colors.light]: string };
+export type Palette = {
+  [K in keyof typeof Colors.light]: (typeof Colors.light)[K] extends readonly string[] ? readonly string[] : string;
+};
 
 export const Spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
 export const Radius = { sm: 8, md: 12, lg: 18, pill: 999 } as const;

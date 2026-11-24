@@ -7,6 +7,8 @@ import {
   Card,
   Divider,
   ErrorText,
+  GradientCard,
+  IconBubble,
   MeterRow,
   Row,
   Screen,
@@ -26,6 +28,7 @@ import {
   useQuery,
 } from '@/lib/data';
 import { money, moneyWhole } from '@/lib/format';
+import { GROUP_STYLE } from '@/lib/visuals';
 
 const ASSET_GROUPS: { kind: string; label: string }[] = [
   { kind: 'cash', label: 'Cash & savings' },
@@ -91,7 +94,7 @@ export default function NetWorth() {
       </T>
       <ErrorText message={error} />
 
-      <View style={[styles.hero, { backgroundColor: c.hero }]}>
+      <GradientCard colors={c.gradWorth}>
         <T color={c.heroMuted} style={styles.heroLabel}>
           WHAT YOU OWN − WHAT YOU OWE
         </T>
@@ -123,7 +126,7 @@ export default function NetWorth() {
             </T>
           </View>
         </Row>
-      </View>
+      </GradientCard>
 
       <HistoryChart history={data.history} />
 
@@ -156,6 +159,7 @@ export default function NetWorth() {
 
       <SectionHeader title="What you own" action="+ Add" onAction={() => router.push('/asset/new')} />
       <Card>
+        <MixBar groups={ASSET_GROUPS} items={assets} />
         {assets.length === 0 && (
           <T variant="muted">Connect bank and investment accounts, and add your home and vehicles.</T>
         )}
@@ -169,14 +173,21 @@ export default function NetWorth() {
         />
       </Card>
 
-      <SectionHeader title="What you owe" />
+      <SectionHeader title="What you owe" action="+ Add" onAction={() => router.push({ pathname: '/bill/[id]', params: { id: 'new', debt: '1' } })} />
       <Card>
-        {debts.length === 0 && <T variant="muted">No debts found. Nice.</T>}
+        <MixBar groups={DEBT_GROUPS} items={debts} />
+        {debts.length === 0 && <T variant="muted">No debts found. Nice. 🎉</T>}
         {DEBT_GROUPS.map((g) => (
           <Group key={g.kind} label={g.label} items={debts.filter((d) => d.kind === g.kind)} manualById={manualById} />
         ))}
+        <Button
+          title="Add a loan or debt"
+          kind="secondary"
+          onPress={() => router.push({ pathname: '/bill/[id]', params: { id: 'new', debt: '1' } })}
+        />
         <T variant="small">
-          Debts come from connected cards and loans, plus debts you entered in Plan → Bills.
+          Connected cards and loans update with each bank sync. Debts you add pay down every month
+          from their payment and interest rate.
         </T>
       </Card>
 
@@ -231,25 +242,33 @@ function Group({
 }) {
   if (!items.length) return null;
   const total = items.reduce((s, i) => s + i.amount, 0);
+  const style = GROUP_STYLE[items[0].kind] ?? { emoji: '•', color: '#94A3B8' };
   return (
     <View style={{ gap: Spacing.sm }}>
       <Row style={{ justifyContent: 'space-between' }}>
-        <T style={{ fontWeight: '700' }}>{label}</T>
+        <Row style={{ gap: Spacing.sm, flexShrink: 1 }}>
+          <IconBubble emoji={style.emoji} color={style.color} size={30} />
+          <T style={{ fontWeight: '700', flexShrink: 1 }} numberOfLines={1}>
+            {label}
+          </T>
+        </Row>
         <T variant="money">{money(total)}</T>
       </Row>
       {items
         .sort((a, b) => b.amount - a.amount)
         .map((i) => {
           const manual = i.source === 'manual' ? manualById.get(i.ref_id) : undefined;
+          // Manual debts open their bill; manual assets open the asset editor.
+          const isDebtItem = i.section === 'liability' && i.source === 'manual';
           const row = (
-            <Row style={{ justifyContent: 'space-between', paddingLeft: Spacing.md }}>
+            <Row style={{ justifyContent: 'space-between', paddingLeft: 38 }}>
               <Row style={{ gap: 6, flexShrink: 1 }}>
                 <T variant="muted" numberOfLines={1} style={{ flexShrink: 1 }}>
                   {i.name}
                 </T>
                 {i.source === 'manual' && (
                   <Badge
-                    text={manual?.value_error ? 'CHECK' : manual?.auto_value ? 'AUTO' : manual ? 'ESTIMATE' : 'MANUAL'}
+                    text={manual?.value_error ? 'CHECK' : manual?.auto_value ? 'AUTO' : manual ? 'ESTIMATE' : '↓ MONTHLY'}
                     tone={manual?.value_error ? 'warning' : manual?.auto_value ? 'primary' : 'neutral'}
                   />
                 )}
@@ -257,10 +276,12 @@ function Group({
               <T variant="muted">{money(i.amount)}</T>
             </Row>
           );
-          return manual ? (
+          return manual || isDebtItem ? (
             <Pressable
               key={i.ref_id}
-              onPress={() => router.push({ pathname: '/asset/[id]', params: { id: i.ref_id } })}
+              onPress={() =>
+                router.push({ pathname: isDebtItem ? '/bill/[id]' : '/asset/[id]', params: { id: i.ref_id } })
+              }
               style={({ pressed }) => pressed && { opacity: 0.6 }}>
               {row}
             </Pressable>
@@ -269,6 +290,38 @@ function Group({
           );
         })}
       <Divider />
+    </View>
+  );
+}
+
+/** One colored block per group, sized by amount, with a labeled legend. */
+function MixBar({ groups, items }: { groups: { kind: string; label: string }[]; items: NetWorthItem[] }) {
+  const parts = groups
+    .map((g) => ({
+      ...g,
+      total: items.filter((i) => i.kind === g.kind).reduce((s, i) => s + i.amount, 0),
+      ...(GROUP_STYLE[g.kind] ?? { emoji: '•', color: '#94A3B8' }),
+    }))
+    .filter((p) => p.total > 0);
+  const total = parts.reduce((s, p) => s + p.total, 0);
+  if (parts.length < 2 || total <= 0) return null;
+  return (
+    <View style={{ gap: Spacing.sm }}>
+      <View style={styles.mix}>
+        {parts.map((p) => (
+          <View key={p.kind} style={{ flex: p.total, backgroundColor: p.color }} />
+        ))}
+      </View>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', columnGap: Spacing.md, rowGap: 4 }}>
+        {parts.map((p) => (
+          <Row key={p.kind} style={{ gap: 4 }}>
+            <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: p.color }} />
+            <T variant="small">
+              {p.label} {Math.round((p.total / total) * 100)}%
+            </T>
+          </Row>
+        ))}
+      </View>
     </View>
   );
 }
@@ -339,7 +392,7 @@ function HistoryChart({ history }: { history: NetWorthPoint[] }) {
 }
 
 const styles = StyleSheet.create({
-  hero: { borderRadius: Radius.lg + 4, padding: Spacing.xl, gap: Spacing.xs },
+  mix: { flexDirection: 'row', height: 14, borderRadius: 7, overflow: 'hidden', gap: 2 },
   heroLabel: { fontSize: 12, fontWeight: '700', letterSpacing: 0.8 },
   heroValue: { fontSize: 40, fontWeight: '800', fontVariant: ['tabular-nums'] },
   heroDivider: { height: StyleSheet.hairlineWidth, opacity: 0.4, marginVertical: Spacing.md },

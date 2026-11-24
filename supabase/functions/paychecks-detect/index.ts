@@ -1,10 +1,19 @@
-// "Check deposits now": re-runs paycheck detection for the signed-in user's
-// household (it also runs automatically after every bank sync).
-import { adminClient, detectPaychecksForHousehold, json, requireHousehold, serve } from "../_shared/sync.ts";
+// "Check bank activity now": re-runs paycheck and bill detection for the
+// signed-in user's household (both also run automatically after every sync).
+import {
+  adminClient,
+  detectBillsForHousehold,
+  detectPaychecksForHousehold,
+  json,
+  requireHousehold,
+  serve,
+} from "../_shared/sync.ts";
 
 serve(async (req) => {
   const admin = adminClient();
   const { householdId } = await requireHousehold(req, admin);
-  const result = await detectPaychecksForHousehold(admin, householdId);
-  return json(req, result);
+  const paychecks = await detectPaychecksForHousehold(admin, householdId);
+  const bills = await detectBillsForHousehold(admin, householdId);
+  // Top-level fields kept for older app versions (paychecks).
+  return json(req, { ...paychecks, paychecks, bills });
 });
