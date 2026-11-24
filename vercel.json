@@ -59,11 +59,11 @@
       ]
     },
     {
-      "source": "/index.html",
+      "source": "/((?!_expo/|icons/|assets/).*)",
       "headers": [
         {
           "key": "Cache-Control",
-          "value": "no-cache"
+          "value": "no-cache, must-revalidate"
         }
       ]
     }
