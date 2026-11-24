@@ -1,20 +1,43 @@
 // Refreshes home values from RentCast's automated valuation (like a
 // Zestimate) for homes where "Update value automatically" is on.
-//  * Scheduler (x-cron-secret), monthly: every opted-in home not valued in
-//    the last 25 days.
-//  * App (signed in): this household's opted-in homes, or { assetId } for one,
-//    at most once a day per home (protects the monthly lookup allowance).
+//
+// Lookups cost money, so they're strictly limited, and the limit is
+// enforced in the database (claim_home_lookup), not just in the app:
+//  * At most ONE lookup per household per calendar month, whoever asks
+//    (the monthly scheduler or the app). Failed lookups count too.
+//  * At most HOME_VALUE_MONTHLY_CAP lookups per month for the whole app
+//    (default 40, under RentCast's free 50).
+// The scheduler (x-cron-secret) runs on the 1st; the app can ask for a
+// household that hasn't had its lookup yet this month.
 //
 // Needs the RENTCAST_API_KEY function secret. Only the home's address is
 // sent to RentCast.
 import { adminClient, HttpError, isCron, json, requireHousehold, serve } from "../_shared/http.ts";
 
 const RENTCAST_URL = "https://api.rentcast.io/v1/avm/value";
-const CRON_MIN_AGE_DAYS = 25;
-const MANUAL_MIN_AGE_HOURS = 24;
+const DEFAULT_MONTHLY_CAP = 40;
+
+function monthlyCap() {
+  const n = Number(Deno.env.get("HOME_VALUE_MONTHLY_CAP"));
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_MONTHLY_CAP;
+}
+
+const monthStart = () => {
+  const d = new Date();
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString();
+};
+const nextMonthName = () => {
+  const d = new Date();
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+};
 
 interface Home {
   id: string;
+  household_id: string;
   address: string;
   valued_at: string | null;
 }
@@ -48,33 +71,51 @@ serve(async (req) => {
   const apiKey = Deno.env.get("RENTCAST_API_KEY");
   if (!apiKey) throw new HttpError(503, "Home values aren't set up yet (missing RentCast key).");
 
+  // Opted-in homes not yet valued this month, oldest value first.
   let query = admin
     .from("manual_assets")
-    .select("id, address, valued_at")
+    .select("id, household_id, address, valued_at")
     .eq("kind", "home")
     .eq("auto_value", true)
-    .not("address", "is", null);
+    .not("address", "is", null)
+    .or(`valued_at.is.null,valued_at.lt.${monthStart()}`)
+    .order("valued_at", { ascending: true, nullsFirst: true });
 
-  if (cron) {
-    const cutoff = new Date(Date.now() - CRON_MIN_AGE_DAYS * 86_400_000).toISOString();
-    query = query.or(`valued_at.is.null,valued_at.lt.${cutoff}`);
-  } else {
+  if (!cron) {
     const body = (await req.json().catch(() => ({}))) as { assetId?: unknown };
     query = query.eq("household_id", householdId!);
     if (body.assetId !== undefined) {
-      if (typeof body.assetId !== "string") throw new HttpError(400, "Invalid asset");
+      if (typeof body.assetId !== "string" || body.assetId.length > 64) throw new HttpError(400, "Invalid asset");
       query = query.eq("id", body.assetId);
     }
   }
 
   const { data: homes, error } = await query;
   if (error) throw error;
+  if (!cron && !(homes ?? []).length) {
+    return json(req, { results: [], message: "Already up to date this month." });
+  }
 
+  const cap = monthlyCap();
   const results = [];
   for (const home of (homes ?? []) as Home[]) {
-    if (!cron && home.valued_at &&
-        Date.now() - Date.parse(home.valued_at) < MANUAL_MIN_AGE_HOURS * 3_600_000) {
-      results.push({ id: home.id, status: "recent" });
+    // Reserve the lookup first (atomic): this is what enforces the limits.
+    const { data: claim, error: claimErr } = await admin.rpc("claim_home_lookup", {
+      p_household: home.household_id,
+      p_asset: home.id,
+      p_global_cap: cap,
+    });
+    if (claimErr) throw claimErr;
+    if (claim === "global_limit") {
+      console.warn(`home values: monthly cap of ${cap} reached`);
+      if (!cron) throw new HttpError(429, `Home values are paused until ${nextMonthName()}.`);
+      break;
+    }
+    if (claim !== "ok") {
+      if (!cron) {
+        throw new HttpError(429, `Home values update once a month. The next update is ${nextMonthName()}.`);
+      }
+      results.push({ id: home.id, status: "limit" });
       continue;
     }
     try {
@@ -97,6 +138,8 @@ serve(async (req) => {
       await admin.from("manual_assets").update({ value_error: message }).eq("id", home.id);
       results.push({ id: home.id, status: "error", error: message });
     }
+    // From the app, one lookup per request (the household's one for the month).
+    if (!cron) break;
   }
 
   // Keep this month's net worth snapshot current.

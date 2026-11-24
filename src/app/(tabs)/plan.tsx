@@ -37,6 +37,7 @@ import {
   debtDetails,
   expenseBills,
   HouseholdData,
+  incomeEdits,
   toBillSchedule,
   useHouseholdData,
 } from '@/lib/household-data';
@@ -102,6 +103,8 @@ function usePlan(data: HouseholdData, savingsOverride: number | null) {
       data.bills.map((b) => toBillSchedule(b, data.liabilities)),
       from,
       to,
+      // Commission and other amounts you entered for upcoming paydays.
+      incomeEdits(data.expected),
     );
     // Typical leftover after bills: the median, so a check squeezed by a
     // bill due right after it doesn't drag the plan down.
@@ -296,6 +299,7 @@ function CheckCard({ check, savings, typical }: { check: PlannedCheck; savings: 
           </T>
           <T variant="small">
             {weekday(check.date)}, {shortDate(check.date)}
+            {check.edited ? ' · 💼 your amount' : ''}
           </T>
         </View>
         <T variant="money" color={c.positive} style={{ fontSize: 17 }}>

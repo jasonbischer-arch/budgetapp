@@ -49,6 +49,10 @@ Plaid API ──► your banks
 - **iPhone:** the login session is stored in the Keychain. The app locks with
   Face ID or your passcode after a minute in the background.
 - Passwords must be at least 10 characters.
+- **Home value lookups cost money**, so they're capped in the database:
+  one per household per month (scheduler and app combined, failed lookups
+  included), and 40 per month for the whole app (`HOME_VALUE_MONTHLY_CAP`
+  function secret to change it).
 
 | Path | What's there |
 |---|---|

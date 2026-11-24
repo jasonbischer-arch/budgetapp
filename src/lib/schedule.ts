@@ -94,6 +94,8 @@ export interface Occurrence {
   name: string;
   date: ISODate;
   amount: number;
+  /** A payday whose amount you entered (commission), or extra income. */
+  edited?: boolean;
 }
 
 /** Paydays for a schedule within [from, to]. */
@@ -177,6 +179,45 @@ export interface PlannedBill extends Occurrence {
   split: boolean;
 }
 
+/**
+ * What you said a payday will really be (e.g. this month's commission), or
+ * income that isn't on a schedule (sourceId null).
+ */
+export interface IncomeEdit {
+  id: string;
+  sourceId: string | null;
+  date: ISODate;
+  name: string;
+  amount: number;
+}
+
+/**
+ * Paydays with your edits applied: an edited check takes your amount, and
+ * extra income is added on its date. An edit whose payday is no longer on
+ * the schedule still counts, as extra income.
+ */
+export function applyIncomeEdits(checks: Occurrence[], edits: IncomeEdit[], from: ISODate, to: ISODate): Occurrence[] {
+  const used = new Set<string>();
+  const out = checks.map((c) => {
+    const e = edits.find((x) => x.sourceId === c.refId && x.date === c.date);
+    if (!e) return c;
+    used.add(e.id);
+    return { ...c, amount: e.amount, edited: true };
+  });
+  for (const e of edits) {
+    if (used.has(e.id) || e.date < from || e.date > to) continue;
+    out.push({
+      id: `extra:${e.id}`,
+      refId: e.sourceId ?? `extra:${e.id}`,
+      name: e.name,
+      date: e.date,
+      amount: e.amount,
+      edited: true,
+    });
+  }
+  return out;
+}
+
 export interface PlannedCheck extends Occurrence {
   bills: PlannedBill[];
   billsTotal: number;
@@ -214,9 +255,14 @@ export function buildPaycheckPlan(
   bills: BillSchedule[],
   from: ISODate,
   to: ISODate,
+  edits: IncomeEdit[] = [],
 ): PaycheckPlan {
-  const checks: PlannedCheck[] = incomes
-    .flatMap((s) => paydays(s, from, to))
+  const checks: PlannedCheck[] = applyIncomeEdits(
+    incomes.flatMap((s) => paydays(s, from, to)),
+    edits,
+    from,
+    to,
+  )
     .sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name))
     .map((c) => ({ ...c, bills: [], billsTotal: 0, leftover: c.amount }));
 

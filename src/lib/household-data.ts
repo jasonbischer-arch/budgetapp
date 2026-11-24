@@ -19,7 +19,7 @@ import {
 } from './data';
 import { BillLike, monthStart } from './insights';
 import { currentBalance, payoff } from './debt';
-import { BillSchedule, endOfMonth, monthlyAmount, paydays, PaySchedule, today } from './schedule';
+import { addDays, BillSchedule, endOfMonth, IncomeEdit, monthlyAmount, paydays, PaySchedule, today } from './schedule';
 
 export interface HouseholdData {
   accounts: Account[];
@@ -29,7 +29,7 @@ export interface HouseholdData {
   incomes: IncomeSource[];
   bills: Bill[];
   liabilities: Liability[];
-  /** Commission/bonus amounts and extra income, today through month end. */
+  /** Commission/bonus amounts and extra income, today through next month. */
   expected: ExpectedIncome[];
 }
 
@@ -58,7 +58,8 @@ export function useHouseholdData() {
       fetchIncomeSources(),
       fetchBills(),
       fetchLiabilities(),
-      fetchExpectedIncome(today(), endOfMonth(today())),
+      // Through next month: the paycheck plan looks that far ahead.
+      fetchExpectedIncome(today(), endOfMonth(addDays(endOfMonth(today()), 1))),
     ]);
     return { accounts, categories, flows, firstDate, incomes, bills, liabilities, expected };
   }, EMPTY);
@@ -181,4 +182,15 @@ export function expenseBills(bills: Bill[], accounts: Account[], liabilities: Li
       category_id: b.category_id,
       expense_type: b.expense_type ?? 'fixed',
     }));
+}
+
+/** Your saved edits in the shape the paycheck planner takes. */
+export function incomeEdits(expected: ExpectedIncome[]): IncomeEdit[] {
+  return expected.map((e) => ({
+    id: e.id,
+    sourceId: e.income_source_id,
+    date: e.pay_date,
+    name: e.name,
+    amount: e.amount,
+  }));
 }

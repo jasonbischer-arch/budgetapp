@@ -120,7 +120,9 @@ export default function AssetEditor() {
         const r = await refreshHomeValue(savedId).catch((e: Error) => ({ results: [{ id: savedId, status: 'error', error: e.message }] }));
         const res = r.results.find((x) => x.id === savedId);
         if (res?.status === 'error') {
-          setError(`Saved, but the value lookup failed: ${res.error}`);
+          // Monthly limit reached: the home is saved and updates next month.
+          const limited = /once a month|paused/i.test(res.error ?? '');
+          setError(limited ? `Saved. ${res.error}` : `Saved, but the value lookup failed: ${res.error}`);
           setSaving(false);
           return;
         }
@@ -215,7 +217,9 @@ export default function AssetEditor() {
           <Row style={{ justifyContent: 'space-between' }}>
             <View style={{ flex: 1 }}>
               <T style={{ fontWeight: '600' }}>Update value automatically</T>
-              <T variant="small">Gets a market estimate on the 1st of every month.</T>
+              <T variant="small">
+                Gets a market estimate once a month. Changing the address uses that month&apos;s lookup.
+              </T>
             </View>
             <Switch value={autoValue} onValueChange={setAutoValue} accessibilityLabel="Update value automatically" />
           </Row>

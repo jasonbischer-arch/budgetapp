@@ -48,3 +48,24 @@ assert(after[0] === "2026-11-09", "or to Monday after");
 // A payday shifted from the 1st into the previous month still appears.
 const firsts = { id: "f", name: "f", amount: 1, frequency: "monthly" as const, anchor_date: null, day1: 1, day2: null, weekend_shift: "before" as const };
 assert(paydays(firsts, "2026-07-25", "2026-07-31").map(p => p.date)[0] === "2026-07-31", "Aug 1 (Sat) payday lands Fri Jul 31");
+
+// --- Commission edits flow into the paycheck plan ---------------------------
+{
+  const { buildPaycheckPlan: build, applyIncomeEdits: apply } = await import("../src/lib/schedule.ts");
+  const job = { id: "job", name: "Jason", amount: 2000, frequency: "biweekly" as const, anchor_date: "2026-11-27", day1: null, day2: null };
+  const edits = [
+    { id: "e1", sourceId: "job", date: "2026-12-11", name: "Jason", amount: 6500 },
+    { id: "e2", sourceId: null, date: "2026-12-15", name: "Q4 bonus", amount: 1200 },
+    { id: "e3", sourceId: null, date: "2027-02-01", name: "out of range", amount: 99 },
+  ];
+  const plan = build([job], [], "2026-11-24", "2026-12-31", edits);
+  const amounts = plan.checks.map((c) => `${c.date}:${c.amount}`);
+  if (!amounts.includes("2026-12-11:6500")) throw new Error("FAIL: commission replaces that payday: " + amounts);
+  if (!amounts.includes("2026-11-27:2000")) throw new Error("FAIL: other paydays keep the usual amount");
+  if (!amounts.includes("2026-12-15:1200")) throw new Error("FAIL: extra income added on its date");
+  if (amounts.some((a) => a.endsWith(":99"))) throw new Error("FAIL: income outside the window is left out");
+  console.log("ok - commission edits replace paydays and extra income is added in the paycheck plan");
+  const plain = apply([{ id: "job:2026-11-27", refId: "job", name: "Jason", date: "2026-11-27", amount: 2000 }], [], "2026-11-24", "2026-11-30");
+  if (plain[0].edited) throw new Error("FAIL: unedited check isn't marked");
+  console.log("ok - unedited checks aren't marked as yours");
+}
