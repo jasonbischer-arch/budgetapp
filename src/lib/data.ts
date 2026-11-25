@@ -300,6 +300,30 @@ export async function updateTransaction(
   unwrap(await supabase.from('transactions').update(patch).eq('id', id));
 }
 
+/** Places whose transactions are all left out of the budget (e.g. DraftKings). */
+export interface ExcludedPayee {
+  payee_key: string;
+  name: string;
+}
+
+export async function fetchExcludedPayees(): Promise<ExcludedPayee[]> {
+  return unwrap(await supabase.from('excluded_payees').select('payee_key, name').order('name')) as ExcludedPayee[];
+}
+
+/** Excludes every transaction from the same place as this one, now and later. Returns how many changed. */
+export async function excludePayee(transactionId: string): Promise<number> {
+  const n = unwrap(await supabase.rpc('exclude_payee', { p_transaction_id: transactionId })) as number;
+  clearQueryCache(); // totals and budgets change
+  return n;
+}
+
+/** Counts that place in the budget again. Returns how many changed. */
+export async function includePayee(householdId: string, payeeKey: string): Promise<number> {
+  const n = unwrap(await supabase.rpc('include_payee', { p_household: householdId, p_payee_key: payeeKey })) as number;
+  clearQueryCache();
+  return n;
+}
+
 /** Sets a budget by hand: it stops following the automatic average. */
 export async function updateCategoryBudget(id: string, monthly_budget: number | null) {
   unwrap(await supabase.from('categories').update({ monthly_budget, budget_auto: false }).eq('id', id));
