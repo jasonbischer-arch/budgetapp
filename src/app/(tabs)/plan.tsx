@@ -24,6 +24,7 @@ import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
 import { confirmAction } from '@/lib/confirm';
+import { budgetCommission } from '@/lib/taxes';
 import {
   Category,
   detectRecurring,
@@ -31,6 +32,7 @@ import {
   resetCategoryBudget,
   clearPlanRules,
   markBudgetHelpDone,
+  saveCommissionEstimate,
   setPlanMode,
   setCategoryBudgets,
   updateCategoryBudget,
@@ -602,13 +604,92 @@ function scheduleLabel(s: Pick<IncomeSource, 'frequency' | 'day1' | 'day2' | 'an
   }
 }
 
+/** Estimated commission per month: a slow month and a good month. */
+function CommissionCard() {
+  const c = useTheme();
+  const { household, refreshHousehold } = useAuth();
+  const [low, setLow] = useState(household?.commission_low != null ? String(household.commission_low) : '');
+  const [high, setHigh] = useState(household?.commission_high != null ? String(household.commission_high) : '');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const num = (v: string) => {
+    const n = Number(v.replace(/[^0-9.]/g, ''));
+    return v.trim() === '' || Number.isNaN(n) ? null : n;
+  };
+  const est = budgetCommission({
+    low: num(low),
+    high: num(high),
+    state: household?.tax_state ?? null,
+    retirementPct: household?.retirement_pct ?? 0,
+  });
+  const changed = num(low) !== (household?.commission_low ?? null) || num(high) !== (household?.commission_high ?? null);
+
+  async function save() {
+    if (!household) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      await saveCommissionEstimate(household.id, num(low), num(high));
+      await refreshHousehold();
+      setSaved(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <T variant="heading">💼 Commission per month</T>
+      <T variant="small">
+        Before taxes. Budgets use your slow month, so they still work when commission is low.
+      </T>
+      <Row style={{ gap: Spacing.sm }}>
+        <View style={{ flex: 1, gap: 4 }}>
+          <T variant="small">Slow month</T>
+          <Input value={low} onChangeText={(v) => (setLow(v), setSaved(false))} keyboardType="decimal-pad" placeholder="$0" accessibilityLabel="Commission in a slow month" />
+        </View>
+        <View style={{ flex: 1, gap: 4 }}>
+          <T variant="small">Good month</T>
+          <Input value={high} onChangeText={(v) => (setHigh(v), setSaved(false))} keyboardType="decimal-pad" placeholder="$0" accessibilityLabel="Commission in a good month" />
+        </View>
+      </Row>
+      {est.gross > 0 && (
+        <T variant="small">
+          Take-home about {moneyWhole(est.lowNet)}
+          {est.highNet !== est.lowNet ? ` – ${moneyWhole(est.highNet)}` : ''} a month
+          {household?.tax_state ? '' : ' (federal + Social Security + Medicare; set your state when you edit a commission check)'}.{' '}
+          <T variant="small" style={{ fontWeight: '700' }} color={c.positive}>
+            Budgeting with {moneyWhole(est.net)}.
+          </T>
+        </T>
+      )}
+      <ErrorText message={err} />
+      {(changed || saved) && (
+        <Button title={saved && !changed ? 'Saved ✓' : 'Save commission'} onPress={save} loading={saving} disabled={!changed} />
+      )}
+    </Card>
+  );
+}
+
 function IncomeView({ data, reload }: { data: HouseholdData; reload: () => void }) {
   const c = useTheme();
+  const { household } = useAuth();
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  const monthly = data.incomes.reduce((s, x) => s + monthlyAmount(x.frequency, x.amount), 0);
+  const paychecks = data.incomes.reduce((s, x) => s + monthlyAmount(x.frequency, x.amount), 0);
+  const commission = budgetCommission({
+    low: household?.commission_low ?? null,
+    high: household?.commission_high ?? null,
+    state: household?.tax_state ?? null,
+    retirementPct: household?.retirement_pct ?? 0,
+  });
+  const monthly = paychecks + commission.net;
   const detected = data.incomes.some((s) => s.detection_key);
 
   async function checkNow() {
@@ -635,9 +716,18 @@ function IncomeView({ data, reload }: { data: HouseholdData; reload: () => void 
   return (
     <>
       <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
-        <Stat label="Expected / month" icon="💰" accent="#1BAF7A" value={moneyWhole(monthly)} color={c.positive} />
+        <Stat
+          label="Expected / month"
+          icon="💰"
+          accent="#1BAF7A"
+          value={moneyWhole(monthly)}
+          color={c.positive}
+          sub={commission.net ? `incl. ${moneyWhole(commission.net)} commission` : 'take-home'}
+        />
         <Stat label="Paychecks" icon="🗓️" accent="#2A78D6" value={String(data.incomes.length)} />
       </Row>
+
+      <CommissionCard />
 
       <Card style={{ backgroundColor: c.primarySoft, borderColor: c.primarySoft, padding: Spacing.md }}>
         <T>

@@ -39,7 +39,8 @@ import {
   trailingAverages,
   trailingMonths,
 } from '@/lib/insights';
-import { dueDates, endOfMonth, today } from '@/lib/schedule';
+import { dueDates, endOfMonth, monthlyAmount, today } from '@/lib/schedule';
+import { budgetCommission } from '@/lib/taxes';
 
 type Period = '1' | '3' | '6' | '12';
 const PERIODS: { value: Period; label: string }[] = [
@@ -63,6 +64,16 @@ export default function Overview() {
   const now = useMemo(() => new Date(), []);
   const { cash, cards, cardAccounts } = balances(data.accounts);
   const avg = trailingAverages(data.flows, now, data.firstDate);
+  // Income you can count on: your paychecks (Plan > Income) plus commission
+  // at its slow-month estimate, after taxes.
+  const commission = budgetCommission({
+    low: household?.commission_low ?? null,
+    high: household?.commission_high ?? null,
+    state: household?.tax_state ?? null,
+    retirementPct: household?.retirement_pct ?? 0,
+  });
+  const expectedIncome =
+    data.incomes.reduce((s, x) => s + monthlyAmount(x.frequency, x.amount), 0) + commission.net;
   const split = expenseBreakdown(
     data.flows,
     data.categories,
@@ -186,10 +197,18 @@ export default function Overview() {
       )}
 
       {/* Trailing 12-month averages */}
-      <SectionHeader title="Monthly average" />
+      <SectionHeader title="Each month" />
       <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
-        <Stat label="Income" icon="💰" accent="#1BAF7A" value={moneyWhole(avg.income)} color={c.positive} />
-        <Stat label="Expenses" icon="🧾" accent="#EB6834" value={moneyWhole(avg.spent)} />
+        <Stat
+          label="Expected income"
+          icon="💰"
+          accent="#1BAF7A"
+          value={moneyWhole(expectedIncome)}
+          color={c.positive}
+          sub={commission.net ? `incl. ${moneyWhole(commission.net)} commission (slow month)` : 'from your paychecks'}
+          onPress={() => router.push({ pathname: '/plan', params: { section: 'income' } })}
+        />
+        <Stat label="Expenses" icon="🧾" accent="#EB6834" value={moneyWhole(avg.spent)} sub="monthly average" />
       </Row>
       {avg.months > 0 && (
         <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
@@ -214,8 +233,8 @@ export default function Overview() {
       <T variant="small" style={{ marginTop: -Spacing.sm }}>
         {avg.months
           ? avg.months >= 12
-            ? 'Based on the last 12 complete months.'
-            : `Based on ${avg.months} complete month${avg.months === 1 ? '' : 's'} of bank history so far.`
+            ? 'Income: what your paychecks and commission estimate bring in. Expenses: the last 12 complete months.'
+            : `Income: what your paychecks and commission estimate bring in. Expenses: ${avg.months} complete month${avg.months === 1 ? '' : 's'} of bank history so far.`
           : 'Averages appear after your first complete month of history.'}
       </T>
 

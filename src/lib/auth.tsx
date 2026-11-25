@@ -18,6 +18,9 @@ export interface Household {
   budget_help_month: string | null;
   /** Paycheck plan: 'even' (automatic) or 'mine' (your rules first). */
   plan_mode: 'even' | 'mine';
+  /** Estimated commission per month before taxes: a slow and a good month. */
+  commission_low: number | null;
+  commission_high: number | null;
 }
 
 interface AuthState {
@@ -44,7 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // RLS returns only the household this user belongs to.
     const { data } = await supabase
       .from('households')
-      .select('id, name, invite_code, savings_per_check, tax_state, retirement_pct, budget_help_month, plan_mode')
+      .select('id, name, invite_code, savings_per_check, tax_state, retirement_pct, budget_help_month, plan_mode, commission_low, commission_high')
       .maybeSingle();
     const h = data as Household | null;
     setHousehold(
@@ -53,6 +56,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             ...h,
             savings_per_check: h.savings_per_check == null ? null : Number(h.savings_per_check),
             retirement_pct: Number(h.retirement_pct ?? 0),
+            commission_low: h.commission_low == null ? null : Number(h.commission_low),
+            commission_high: h.commission_high == null ? null : Number(h.commission_high),
           }
         : null,
     );

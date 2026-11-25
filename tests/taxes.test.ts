@@ -123,3 +123,13 @@ assert(near(moved.fixed.total, 0) && near(moved.variable.total, 150 + 60 + 800),
   assert(dine.budgeted && near(dine.monthly, 400) && near(dine.average!, 600), "a budgeted category shows its budget and its real average");
   assert(out.variable.items.some((i) => i.id === "gift"), "a budget with no spending yet still counts");
 }
+
+// --- Monthly commission estimate: budget with the slow month ------------------
+{
+  const { budgetCommission } = await import("../src/lib/taxes.ts");
+  const b = budgetCommission({ low: 4000, high: 9000, state: "TX" });
+  assert(b.gross === 4000 && near(b.net, 4000 * (1 - 0.2965)), "uses the lower (slow month) estimate, after taxes: " + b.net);
+  assert(budgetCommission({ low: 9000, high: 4000, state: "TX" }).gross === 4000, "the lower number wins even if entered backwards");
+  assert(budgetCommission({ low: null, high: 5000, state: "TX" }).gross === 5000, "one estimate is used as is");
+  assert(budgetCommission({ low: null, high: null, state: "TX" }).net === 0, "no estimate adds nothing");
+}

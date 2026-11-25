@@ -483,6 +483,13 @@ export async function markBudgetHelpDone(householdId: string, month: string) {
   unwrap(await supabase.from('households').update({ budget_help_month: month }).eq('id', householdId));
 }
 
+/** Estimated monthly commission (before taxes): slow month and good month. */
+export async function saveCommissionEstimate(householdId: string, low: number | null, high: number | null) {
+  unwrap(
+    await supabase.from('households').update({ commission_low: low, commission_high: high }).eq('id', householdId),
+  );
+}
+
 export async function saveTaxSettings(householdId: string, tax_state: string | null, retirement_pct: number) {
   unwrap(await supabase.from('households').update({ tax_state, retirement_pct }).eq('id', householdId));
 }

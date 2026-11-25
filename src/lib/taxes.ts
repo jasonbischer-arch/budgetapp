@@ -139,3 +139,25 @@ export function commissionTakeHome(opts: {
     net: round2(gross - withheld),
   };
 }
+
+/**
+ * Monthly commission to budget with: the take-home of your slow month (the
+ * lower estimate), so the budget still works when commission is low.
+ */
+export function budgetCommission(opts: {
+  low: number | null;
+  high: number | null;
+  state: string | null;
+  retirementPct?: number;
+}) {
+  const amounts = [opts.low, opts.high].filter((x): x is number => x != null && x > 0);
+  if (!amounts.length) return { gross: 0, net: 0, lowNet: 0, highNet: 0 };
+  const net = (g: number) => commissionTakeHome({ gross: g, state: opts.state, retirementPct: opts.retirementPct }).net;
+  const gross = Math.min(...amounts);
+  return {
+    gross,
+    net: net(gross),
+    lowNet: net(Math.min(...amounts)),
+    highNet: net(Math.max(...amounts)),
+  };
+}
