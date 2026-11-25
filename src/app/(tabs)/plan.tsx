@@ -1,6 +1,8 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import PlaidLink from '@/components/plaid-link';
 import {
@@ -30,7 +32,8 @@ import {
   detectRecurring,
   IncomeSource,
   resetCategoryBudget,
-  clearPlanRules,
+  replacePlanRules,
+  savePlanRulesForBill,
   markBudgetHelpDone,
   saveCommissionEstimate,
   setPlanMode,
@@ -63,6 +66,7 @@ import {
   endOfMonth,
   monthlyAmount,
   paydays,
+  PlannedBill,
   PlannedCheck,
   startOfMonth,
   today,
@@ -107,32 +111,61 @@ export default function PlanScreen() {
 // Paycheck plan: bills, then the same savings and spending money every check
 // ---------------------------------------------------------------------------
 
+/** Inputs both plans share: your paychecks, fixed bills and entered commission. */
+function planInputs(data: HouseholdData) {
+  const from = today();
+  const to = endOfMonth(addDays(endOfMonth(from), 1)); // through end of next month
+  // Only your fixed expenses: the same bills as the Fixed list (credit card
+  // payments aren't included; the card's purchases are spending).
+  const fixedIds = new Set(
+    expenseBills(data.bills, data.accounts, data.liabilities)
+      .filter((b) => b.expense_type === 'fixed')
+      .map((b) => b.id),
+  );
+  const fixed = data.bills.filter((b) => fixedIds.has(b.id));
+  return {
+    from,
+    to,
+    fixed,
+    schedules: fixed.map((b) => toBillSchedule(b, data.liabilities)),
+    // Commission and other amounts you entered for upcoming paydays.
+    edits: incomeEdits(data.expected),
+  };
+}
+
 function usePlan(data: HouseholdData, mode: 'even' | 'mine') {
   return useMemo(() => {
-    const from = today();
-    const to = endOfMonth(addDays(endOfMonth(from), 1)); // through end of next month
-    // Only your fixed expenses: the same bills as the Fixed list (credit card
-    // payments aren't included; the card's purchases are spending).
-    const fixedIds = new Set(
-      expenseBills(data.bills, data.accounts, data.liabilities)
-        .filter((b) => b.expense_type === 'fixed')
-        .map((b) => b.id),
-    );
+    const { from, to, fixed, schedules, edits } = planInputs(data);
     const rules =
       mode === 'mine'
-        ? data.planRules.map((r) => ({ billId: r.bill_id, sourceId: r.income_source_id, amount: r.amount }))
+        ? data.planRules.map((r) => ({
+            billId: r.bill_id,
+            sourceId: r.income_source_id,
+            amount: r.amount,
+            slot: r.check_slot,
+          }))
         : [];
-    const plan = buildPaycheckPlan(
-      data.incomes,
-      data.bills.filter((b) => fixedIds.has(b.id)).map((b) => toBillSchedule(b, data.liabilities)),
-      from,
-      to,
-      // Commission and other amounts you entered for upcoming paydays.
-      incomeEdits(data.expected),
-      rules,
-    );
-    return { plan };
+    // My plan: only the bills you put on a check; the rest wait in a list.
+    const plan = buildPaycheckPlan(data.incomes, schedules, from, to, edits, rules, { onlyRules: mode === 'mine' });
+    return { plan, fixed };
   }, [data, mode]);
+}
+
+/** The automatic plan turned into "this bill → this check" choices, to start My plan from. */
+function rulesFromEvenPlan(data: HouseholdData) {
+  const { from, to, schedules, edits } = planInputs(data);
+  const even = buildPaycheckPlan(data.incomes, schedules, from, to, edits);
+  const best = new Map<string, { check: PlannedCheck; amount: number }>();
+  for (const check of even.checks) {
+    for (const b of check.bills) {
+      const prev = best.get(b.refId);
+      if (!prev || b.amount > prev.amount) best.set(b.refId, { check, amount: b.amount });
+    }
+  }
+  return [...best.entries()].map(([billId, { check }]) => {
+    const source = check.sources?.[0] ?? check.refId;
+    return { bill_id: billId, income_source_id: source, check_slot: check.slots?.[source] ?? null };
+  });
 }
 
 function PaycheckPlanView({
@@ -149,13 +182,21 @@ function PaycheckPlanView({
   const mode = household?.plan_mode ?? 'even';
   const p = usePlan(data, mode);
   const [modeErr, setModeErr] = useState<string | null>(null);
-  const ruleCount = new Set(data.planRules.map((r) => r.bill_id)).size;
+  const [addTo, setAddTo] = useState<PlannedCheck | null>(null);
+  // Hidden right away while a change saves, so nothing can be picked twice.
+  const [pending, setPending] = useState<Set<string>>(new Set());
+  const ruleBills = new Set(data.planRules.map((r) => r.bill_id));
+  useEffect(() => setPending(new Set()), [data.planRules]);
 
   async function changeMode(next: 'even' | 'mine') {
     if (!household || next === mode) return;
     try {
+      // Starting My plan for the first time: begin from the automatic plan,
+      // so you only move what you want to change.
+      if (next === 'mine' && ruleBills.size === 0) await replacePlanRules(household.id, rulesFromEvenPlan(data));
       await setPlanMode(household.id, next);
       await refreshHousehold();
+      reload();
       setModeErr(null);
     } catch (e) {
       setModeErr(e instanceof Error ? e.message : String(e));
@@ -164,14 +205,54 @@ function PaycheckPlanView({
 
   function resetMine() {
     if (!household) return;
-    confirmAction('Start your plan over?', 'Every bill goes back to being placed automatically.', 'Start over', async () => {
-      try {
-        await clearPlanRules(household.id);
-        reload();
-      } catch (e) {
-        setModeErr(e instanceof Error ? e.message : String(e));
-      }
-    });
+    confirmAction(
+      'Start your plan over?',
+      'Your plan goes back to the automatic one, and you can move bills from there.',
+      'Start over',
+      async () => {
+        try {
+          await replacePlanRules(household.id, rulesFromEvenPlan(data));
+          reload();
+        } catch (e) {
+          setModeErr(e instanceof Error ? e.message : String(e));
+        }
+      },
+    );
+  }
+
+  async function removeBill(billId: string) {
+    if (!household) return;
+    setPending((s) => new Set(s).add(billId));
+    try {
+      await savePlanRulesForBill(household.id, billId, []);
+      reload();
+    } catch (e) {
+      setPending((s) => {
+        const n = new Set(s);
+        n.delete(billId);
+        return n;
+      });
+      setModeErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function addBill(check: PlannedCheck, billId: string) {
+    if (!household) return;
+    const source = check.sources?.[0] ?? check.refId;
+    setPending((s) => new Set(s).add(billId));
+    try {
+      await savePlanRulesForBill(household.id, billId, [
+        { income_source_id: source, amount: null, check_slot: check.slots?.[source] ?? null },
+      ]);
+      reload();
+    } catch (e) {
+      setPending((s) => {
+        const n = new Set(s);
+        n.delete(billId);
+        return n;
+      });
+      setModeErr(e instanceof Error ? e.message : String(e));
+    }
   }
 
   if (!data.incomes.length || !data.bills.length) {
@@ -179,9 +260,8 @@ function PaycheckPlanView({
       <Card>
         <T variant="heading">Build your paycheck plan</T>
         <T variant="muted">
-          Once your paychecks and fixed bills are in, the plan pays each bill in full from one
-          paycheck, arranged so every check keeps about the same amount. Paychecks are found
-          automatically from your bank deposits.
+          Once your paychecks and fixed bills are in, the plan divides your bills across your paychecks so
+          every check keeps about the same amount. Paychecks are found automatically from your bank deposits.
         </T>
         {!data.incomes.length && <Button title="Add paychecks" onPress={() => goTo('income')} />}
         {!data.bills.length && <Button title="Add bills" kind="secondary" onPress={() => goTo('bills')} />}
@@ -198,6 +278,13 @@ function PaycheckPlanView({
   const minLeft = Math.min(...lefts);
   const maxLeft = Math.max(...lefts);
   const fixedTotal = p.plan.checks.reduce((s2, x) => s2 + x.billsTotal, 0);
+  // Fixed bills you can still add: not on any check in your plan.
+  const available = p.fixed
+    .filter((b) => !ruleBills.has(b.id) && !pending.has(b.id))
+    .map((b) => ({ bill: b, amount: toBillSchedule(b, data.liabilities).amount }))
+    .filter((x) => x.amount > 0)
+    .sort((a, b) => b.amount - a.amount);
+  const notPlanned = mode === 'mine' ? p.plan.unplanned.filter((u) => !pending.has(u.refId)) : [];
 
   return (
     <>
@@ -221,12 +308,22 @@ function PaycheckPlanView({
         <T color={c.heroMuted}>
           {mode === 'even'
             ? `Your fixed bills (${moneyWhole(fixedTotal)}) are divided across your ${p.plan.checks.length} checks so every check keeps the same amount. A bill is split between checks when needed, and always paid from checks that arrive before it's due.`
-            : `Bills you've placed (${ruleCount}) are paid from the paycheck you chose. The rest are divided automatically so the other checks stay as even as possible. Tap any bill to change where it comes from.`}
+            : `You choose which check pays each bill. Swipe a bill left to take it off a check, and tap ＋ Add bill to put one on. Each bill stays on that check every month.`}
         </T>
       </GradientCard>
 
-      {mode === 'mine' && ruleCount > 0 && (
-        <Button title="Start my plan over" kind="secondary" onPress={resetMine} />
+      {mode === 'mine' && <Button title="Start my plan over" kind="secondary" onPress={resetMine} />}
+
+      {notPlanned.length > 0 && (
+        <Card style={{ backgroundColor: c.warningSoft, borderColor: c.warningSoft }}>
+          <T variant="heading">Not on a check yet</T>
+          <T variant="muted">
+            {notPlanned.length} fixed {notPlanned.length === 1 ? 'bill' : 'bills'} (
+            {money(notPlanned.reduce((s2, u) => s2 + u.amount, 0))}) {notPlanned.length === 1 ? "isn't" : "aren't"} in
+            your plan. Tap ＋ Add bill on a check to place {notPlanned.length === 1 ? 'it' : 'them'}.
+          </T>
+          <T variant="small">{notPlanned.map((u) => u.name).join(' · ')}</T>
+        </Card>
       )}
 
       {p.plan.smallIncome.length > 0 && (
@@ -256,26 +353,59 @@ function PaycheckPlanView({
             title={new Date(month + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
           />
           {checks.map((check) => (
-            <CheckCard key={check.id} check={check} editable={mode === 'mine'} />
+            <CheckCard
+              key={check.id}
+              check={check}
+              data={data}
+              editable={mode === 'mine'}
+              hidden={pending}
+              onRemove={removeBill}
+              onAdd={() => setAddTo(check)}
+            />
           ))}
         </View>
       ))}
+
+      <AddBillSheet
+        check={addTo}
+        data={data}
+        available={available}
+        onPick={(billId) => addTo && addBill(addTo, billId)}
+        onClose={() => setAddTo(null)}
+      />
     </>
   );
 }
 
-function CheckCard({ check, editable }: { check: PlannedCheck; editable: boolean }) {
+function CheckCard({
+  check,
+  data,
+  editable,
+  hidden,
+  onRemove,
+  onAdd,
+}: {
+  check: PlannedCheck;
+  data: HouseholdData;
+  editable: boolean;
+  hidden: Set<string>;
+  onRemove: (billId: string) => void;
+  onAdd: () => void;
+}) {
   const c = useTheme();
-  const left = check.leftover;
+  const bills = check.bills.filter((b) => !hidden.has(b.refId));
+  const billsTotal = bills.reduce((s2, b) => s2 + b.amount, 0);
+  const left = Math.round((check.amount - billsTotal) * 100) / 100;
   return (
     <Card>
       <Row style={{ justifyContent: 'space-between' }}>
         <View style={{ flexShrink: 1 }}>
-          <T variant="heading" numberOfLines={1}>
+          <T variant="heading" numberOfLines={2}>
             {check.name}
           </T>
           <T variant="small">
             {weekday(check.date)}, {shortDate(check.date)}
+            {(check.sources?.length ?? 1) > 1 ? ' · combined' : ''}
             {check.edited ? ' · 💼 your amount' : ''}
           </T>
         </View>
@@ -285,48 +415,42 @@ function CheckCard({ check, editable }: { check: PlannedCheck; editable: boolean
       </Row>
 
       {/* Fixed bills vs what's left */}
-      <View
-        style={styles.split}
-        accessibilityLabel={`Fixed bills ${money(check.billsTotal)}, left ${money(left)}`}>
-        {check.billsTotal > 0 && (
-          <View style={{ flex: check.billsTotal, backgroundColor: c.textMuted, height: '100%' }} />
-        )}
+      <View style={styles.split} accessibilityLabel={`Fixed bills ${money(billsTotal)}, left ${money(left)}`}>
+        {billsTotal > 0 && <View style={{ flex: billsTotal, backgroundColor: c.textMuted, height: '100%' }} />}
         {left > 0 && <View style={{ flex: left, backgroundColor: c.accent, height: '100%' }} />}
       </View>
 
       {left < 0 && (
         <T variant="small" color={c.negative} style={{ fontWeight: '600' }}>
-          ⚠️ {money(-left)} short: a bill here is bigger than this check. Cover it from savings or the previous
-          check&apos;s leftover.
+          ⚠️ {money(-left)} short: the bills here are more than this check.
+          {editable ? ' Swipe one off and add it to another check.' : ''}
         </T>
       )}
 
-      {check.bills.length === 0 && <T variant="muted">No fixed bills from this check.</T>}
-      {check.bills.map((b) => (
+      {bills.length === 0 && (
+        <T variant="muted">{editable ? 'No bills on this check yet.' : 'No fixed bills from this check.'}</T>
+      )}
+      <View style={{ gap: 2 }}>
+        {bills.map((b) => (
+          <PlanBillRow key={b.id} bill={b} data={data} editable={editable} onRemove={() => onRemove(b.refId)} />
+        ))}
+      </View>
+
+      {editable && (
         <Pressable
-          key={b.id}
-          disabled={!editable}
-          accessibilityRole={editable ? 'button' : undefined}
-          accessibilityLabel={editable ? `Choose how ${b.name} is paid` : undefined}
-          onPress={() => router.push({ pathname: '/plan-bill/[id]', params: { id: b.refId } })}
-          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}>
-        <Row style={{ justifyContent: 'space-between' }}>
-          <View style={{ flexShrink: 1 }}>
-            <T numberOfLines={1}>
-              {b.name}
-              {b.custom ? ' ✋' : ''}
-              {editable ? <T variant="small" color={c.primary}>  ✎</T> : null}
-            </T>
-            <T variant="small">
-              {b.split
-                ? `${money(b.amount)} of ${money(b.fullAmount)} · due ${shortDate(b.date)}`
-                : `Due ${shortDate(b.date)} · paid in full`}
-            </T>
-          </View>
-          <T variant="money">−{money(b.amount)}</T>
-        </Row>
+          onPress={onAdd}
+          accessibilityRole="button"
+          accessibilityLabel={`Add a bill to the ${shortDate(check.date)} check`}
+          style={({ pressed }) => [
+            styles.addButton,
+            { borderColor: c.primary, backgroundColor: pressed ? c.primarySoft : 'transparent' },
+          ]}>
+          <T color={c.primary} style={{ fontWeight: '700' }}>
+            ＋ Add bill
+          </T>
         </Pressable>
-      ))}
+      )}
+
       <Divider />
       <Row style={{ justifyContent: 'space-between' }}>
         <T style={{ fontWeight: '700' }}>Left after fixed bills</T>
@@ -335,6 +459,150 @@ function CheckCard({ check, editable }: { check: PlannedCheck; editable: boolean
         </T>
       </Row>
     </Card>
+  );
+}
+
+/** One bill on a check. In My plan: swipe left to take it off, tap to split it. */
+function PlanBillRow({
+  bill: b,
+  data,
+  editable,
+  onRemove,
+}: {
+  bill: PlannedBill;
+  data: HouseholdData;
+  editable: boolean;
+  onRemove: () => void;
+}) {
+  const c = useTheme();
+  const full = data.bills.find((x) => x.id === b.refId);
+  const emoji = full ? billEmoji(full, data.categories.find((x) => x.id === full.category_id)) : '🧾';
+  const row = (
+    <Pressable
+      disabled={!editable}
+      accessibilityRole={editable ? 'button' : undefined}
+      accessibilityLabel={editable ? `${b.name}: tap to split between checks` : undefined}
+      accessibilityActions={editable ? [{ name: 'delete', label: 'Remove from this check' }] : undefined}
+      onAccessibilityAction={(e) => e.nativeEvent.actionName === 'delete' && onRemove()}
+      onPress={() => router.push({ pathname: '/plan-bill/[id]', params: { id: b.refId } })}
+      style={({ pressed }) => [
+        styles.billRow,
+        { backgroundColor: pressed ? c.cardAlt : c.card, borderRadius: Radius.md },
+      ]}>
+      <IconBubble emoji={emoji} color={c.primary} size={36} />
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <T numberOfLines={1} style={{ fontWeight: '600' }}>
+          {b.name}
+        </T>
+        <T variant="small" numberOfLines={1}>
+          {b.split ? `${money(b.amount)} of ${money(b.fullAmount)} · ` : ''}due {weekday(b.date).slice(0, 3)}{' '}
+          {shortDate(b.date)}
+        </T>
+      </View>
+      <T variant="money">−{money(b.amount)}</T>
+      {editable && Platform.OS === 'web' && (
+        // No swiping with a mouse: a small remove button instead.
+        <Pressable
+          onPress={onRemove}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${b.name} from this check`}
+          style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1, paddingHorizontal: 4 })}>
+          <T color={c.textMuted} style={{ fontSize: 16 }}>
+            ✕
+          </T>
+        </Pressable>
+      )}
+    </Pressable>
+  );
+  if (!editable || Platform.OS === 'web') return row;
+  return (
+    <Swipeable
+      friction={1.6}
+      rightThreshold={60}
+      overshootRight={false}
+      // A quick swipe left takes the bill off this check.
+      onSwipeableOpen={onRemove}
+      renderRightActions={() => (
+        <View style={[styles.removeAction, { backgroundColor: c.negative }]}>
+          <T color="#fff" style={{ fontWeight: '700' }}>
+            🗑 Remove
+          </T>
+        </View>
+      )}>
+      {row}
+    </Swipeable>
+  );
+}
+
+/** Pick a fixed bill to put on a check. A bill you've placed disappears from the list. */
+function AddBillSheet({
+  check,
+  data,
+  available,
+  onPick,
+  onClose,
+}: {
+  check: PlannedCheck | null;
+  data: HouseholdData;
+  available: { bill: HouseholdData['bills'][number]; amount: number }[];
+  onPick: (billId: string) => void;
+  onClose: () => void;
+}) {
+  const c = useTheme();
+  const insets = useSafeAreaInsets();
+  return (
+    <Modal visible={!!check} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={styles.sheetBackdrop} onPress={onClose} accessibilityLabel="Close">
+        <Pressable
+          onPress={() => {}}
+          style={[styles.sheet, { backgroundColor: c.card, paddingBottom: Spacing.lg + insets.bottom }]}>
+          <View style={[styles.grabber, { backgroundColor: c.border }]} />
+          <Row style={{ justifyContent: 'space-between' }}>
+            <View style={{ flexShrink: 1 }}>
+              <T variant="heading">Add a bill</T>
+              {check && (
+                <T variant="small">
+                  To {check.name} · {weekday(check.date)}, {shortDate(check.date)} (and this check every month)
+                </T>
+              )}
+            </View>
+            <Button title="Done" kind="secondary" onPress={onClose} />
+          </Row>
+          {available.length === 0 ? (
+            <T variant="muted" style={{ paddingVertical: Spacing.lg }}>
+              Every fixed bill is already on a check. Swipe one off a check to move it here.
+            </T>
+          ) : (
+            <ScrollView style={{ flexGrow: 0 }} contentContainerStyle={{ gap: Spacing.xs }}>
+              {available.map(({ bill, amount }) => (
+                <Pressable
+                  key={bill.id}
+                  onPress={() => onPick(bill.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Add ${bill.name}, ${money(amount)}`}
+                  style={({ pressed }) => [styles.pickRow, { backgroundColor: pressed ? c.primarySoft : c.cardAlt }]}>
+                  <IconBubble
+                    emoji={billEmoji(bill, data.categories.find((x) => x.id === bill.category_id))}
+                    color={c.primary}
+                  />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <T numberOfLines={1} style={{ fontWeight: '600' }}>
+                      {bill.name}
+                    </T>
+                    <T variant="small">Due the {ordinal(bill.due_day)}</T>
+                  </View>
+                  <T variant="money">{money(amount)}</T>
+                  <T color={c.primary} style={{ fontSize: 20, fontWeight: '700' }}>
+                    ＋
+                  </T>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -1066,4 +1334,11 @@ const styles = StyleSheet.create({
   split: { flexDirection: 'row', height: 10, borderRadius: 5, overflow: 'hidden', gap: 2 },
   track: { height: 8, borderRadius: 4 },
   savingsBox: { borderRadius: Radius.md, padding: Spacing.lg, gap: 2, alignItems: 'center' },
+  billRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: Spacing.sm + 2, paddingHorizontal: Spacing.sm },
+  removeAction: { justifyContent: 'center', alignItems: 'flex-end', paddingHorizontal: Spacing.lg, borderRadius: Radius.md, minWidth: 110 },
+  addButton: { borderWidth: 1.5, borderStyle: 'dashed', borderRadius: Radius.md, paddingVertical: Spacing.md, alignItems: 'center' },
+  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.45)', justifyContent: 'flex-end' },
+  sheet: { borderTopLeftRadius: Radius.lg + 4, borderTopRightRadius: Radius.lg + 4, padding: Spacing.lg, gap: Spacing.sm, maxHeight: '80%', width: '100%', maxWidth: 760, alignSelf: 'center' },
+  grabber: { width: 40, height: 5, borderRadius: 3, alignSelf: 'center', marginBottom: Spacing.sm },
+  pickRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, padding: Spacing.md, borderRadius: Radius.md },
 });

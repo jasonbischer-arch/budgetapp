@@ -106,3 +106,30 @@ assert(paydays(firsts, "2026-07-25", "2026-07-31").map(p => p.date)[0] === "2026
   const lastA = mine.checks.filter((c) => c.refId === "a").at(-1)!;
   assert(mine.checks.flatMap((c) => c.bills).filter((x) => x.refId === "mortgage").length === 1 && lastA.bills.some((x) => x.refId === "mortgage"), "your rule uses the latest check from that paycheck before the due date");
 }
+
+{
+  // Two deposits on the same Friday (base pay + commission) are one pay.
+  const { buildPaycheckPlan: build } = await import("../src/lib/schedule.ts");
+  const base = { id: "base", name: "Bluelinx", amount: 2843.37, frequency: "biweekly" as const, anchor_date: "2026-11-13", day1: null, day2: null };
+  const comm = { id: "comm", name: "Bluelinx bonus", amount: 900, frequency: "biweekly" as const, anchor_date: "2026-11-13", day1: null, day2: null };
+  const rent = [{ id: "rent", name: "Rent", amount: 1000, frequency: "monthly" as const, due_day: 28, due_month: null }];
+  const p = build([base, comm], rent, "2026-12-01", "2026-12-31", [], [{ billId: "rent", sourceId: "comm", amount: null }]);
+  assert(p.checks.length === 2, "same-day checks combine: 2 Fridays in December, not 4");
+  assert(p.checks.every((c) => new Date(c.date + "T12:00:00Z").getUTCDay() === 5), "every check is on a Friday");
+  assert(Math.abs(p.checks[0].amount - 3743.37) < 0.01 && p.checks[0].name === "Bluelinx + Bluelinx bonus", "combined amount and name");
+  assert(p.checks.some((c) => c.bills.some((b) => b.refId === "rent" && b.custom)), "a rule for either source lands on the combined check");
+}
+
+{
+  // My plan: a bill you add to a check stays on that check (its 2nd check of the month).
+  const { buildPaycheckPlan: build } = await import("../src/lib/schedule.ts");
+  const pay = { id: "p", name: "Pay", amount: 3000, frequency: "biweekly" as const, anchor_date: "2026-11-13", day1: null, day2: null };
+  const M = (id: string, amount: number, due_day: number) => ({ id, name: id, amount, frequency: "monthly" as const, due_day, due_month: null });
+  const fixed = [M("rent", 1500, 28), M("phone", 90, 30), M("gym", 40, 15)];
+  const p = build([pay], fixed, "2026-11-25", "2027-01-31", [], [{ billId: "rent", sourceId: "p", amount: null, slot: 1 }], { onlyRules: true });
+  const rentChecks = p.checks.filter((c) => c.bills.some((b) => b.refId === "rent")).map((c) => c.date);
+  console.log("  rent from:", rentChecks.join(", "));
+  assert(rentChecks.join(",") === "2026-12-11,2027-01-08", "rent always from the 1st check of the month (Dec 11, Jan 8)");
+  assert(p.unplanned.map((u) => u.refId).sort().join(",") === "gym,phone", "bills you haven't added are listed, not placed");
+  assert(p.checks.every((c) => c.bills.every((b) => b.refId === "rent")), "nothing else is placed automatically");
+}

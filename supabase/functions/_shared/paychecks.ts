@@ -31,6 +31,11 @@ export interface DetectedPaycheck {
   weekend_shift: WeekendShift;
   /** Typical take-home: mean of recent checks, ignoring bonuses/short checks. */
   average: number;
+  /**
+   * What to budget with: the lowest of the recent typical checks. For pay
+   * that varies (base pay + commission) this is the dependable part.
+   */
+  low: number;
   last_amount: number;
   last_paid: ISODate;
   occurrences: number;
@@ -170,6 +175,20 @@ export function detectPaychecks(deposits: Deposit[], today: ISODate): DetectedPa
 
   const out: DetectedPaycheck[] = [];
   for (const [payer, items] of byPayer) {
+    // One payer, one day = one paycheck (e.g. base pay and commission sent
+    // as two deposits on the same Friday). Read the schedule from those
+    // combined paydays first; only split by amount if that finds nothing
+    // (e.g. two people paid by the same payroll company on different days).
+    const byDay = new Map<ISODate, Deposit>();
+    for (const d of items) {
+      const prev = byDay.get(d.date);
+      byDay.set(d.date, prev ? { ...prev, amount: prev.amount + d.amount } : { ...d });
+    }
+    const whole = byDay.size >= 3 ? classify([...byDay.values()], today) : null;
+    if (whole) {
+      out.push({ key: payer, name: titleCase(payer), ...whole });
+      continue;
+    }
     const bands = amountBands(items).filter((b) => b.length >= 3);
     bands.forEach((band, i) => {
       const found = classify(band, today);
@@ -235,6 +254,7 @@ function classify(band: Deposit[], today: ISODate): Omit<DetectedPaycheck, 'key'
   const mid = median(recent);
   const typical = recent.filter((a) => Math.abs(a - mid) <= 0.35 * mid);
   const average = Math.round((typical.reduce((s, a) => s + a, 0) / typical.length) * 100) / 100;
+  const low = Math.round(Math.min(...typical) * 100) / 100;
 
   return {
     frequency,
@@ -243,6 +263,7 @@ function classify(band: Deposit[], today: ISODate): Omit<DetectedPaycheck, 'key'
     day2,
     weekend_shift: shift,
     average,
+    low,
     last_amount: Math.round(amounts.at(-1)! * 100) / 100,
     last_paid: last,
     occurrences: dates.length,

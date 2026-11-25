@@ -96,6 +96,29 @@ export interface Occurrence {
   amount: number;
   /** A payday whose amount you entered (commission), or extra income. */
   edited?: boolean;
+  /** Paydays combined into this one (same day): every income source on it. */
+  sources?: string[];
+}
+
+/** Combines checks that land on the same day into one pay. */
+export function mergeSameDay(checks: Occurrence[]): Occurrence[] {
+  const byDate = new Map<ISODate, Occurrence>();
+  for (const c of checks) {
+    const prev = byDate.get(c.date);
+    if (!prev) {
+      byDate.set(c.date, { ...c, sources: [...(c.sources ?? [c.refId])] });
+      continue;
+    }
+    const names = prev.name.split(' + ');
+    byDate.set(c.date, {
+      ...prev,
+      name: names.includes(c.name) ? prev.name : `${prev.name} + ${c.name}`,
+      amount: cents(prev.amount + c.amount),
+      edited: prev.edited || c.edited,
+      sources: [...new Set([...(prev.sources ?? []), ...(c.sources ?? [c.refId])])],
+    });
+  }
+  return [...byDate.values()];
 }
 
 /** Paydays for a schedule within [from, to]. */
@@ -193,6 +216,17 @@ export interface PlanRule {
   sourceId: string;
   /** Dollars from this paycheck; null = whatever's left of the bill. */
   amount: number | null;
+  /**
+   * Which of that paycheck's checks in a month (1 = its first check of the
+   * month). null = the latest check before the bill is due.
+   */
+  slot?: number | null;
+}
+
+/** Plan options. */
+export interface PlanOptions {
+  /** Only place bills you added (your own plan); the rest are listed as not planned. */
+  onlyRules?: boolean;
 }
 
 /**
@@ -235,6 +269,8 @@ export function applyIncomeEdits(checks: Occurrence[], edits: IncomeEdit[], from
 }
 
 export interface PlannedCheck extends Occurrence {
+  /** Per income source on this check: which of its checks this month (1 = first). */
+  slots?: Record<string, number>;
   bills: PlannedBill[];
   billsTotal: number;
   leftover: number;
@@ -248,6 +284,19 @@ export interface PaycheckPlan {
   fromCash: Occurrence[];
   /** The average left per check. */
   target: number;
+  /** Your own plan: fixed bills you haven't put on a check yet. */
+  unplanned: Occurrence[];
+}
+
+/** Which of a paycheck's checks in its month this is (1 = first). */
+export function checkSlot(check: Occurrence, sourceId: string, all: Occurrence[]): number {
+  const month = check.date.slice(0, 7);
+  return (
+    1 +
+    all.filter(
+      (c) => c.date.slice(0, 7) === month && c.date < check.date && (c.sources ?? [c.refId]).includes(sourceId),
+    ).length
+  );
 }
 
 /** How early a bill may be paid: from a paycheck at most this many days before it's due. */
@@ -276,8 +325,10 @@ export function buildPaycheckPlan(
   to: ISODate,
   edits: IncomeEdit[] = [],
   rules: PlanRule[] = [],
+  opts: PlanOptions = {},
 ): PaycheckPlan {
-  const all = applyIncomeEdits(incomes.flatMap((s) => paydays(s, from, to)), edits, from, to).sort(
+  // Two deposits on one day (e.g. base pay + commission) are one pay.
+  const all = mergeSameDay(applyIncomeEdits(incomes.flatMap((s) => paydays(s, from, to)), edits, from, to)).sort(
     (a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name),
   );
   // Real paychecks only: a deposit under a fifth of your typical check (a
@@ -289,11 +340,20 @@ export function buildPaycheckPlan(
   const checks: PlannedCheck[] = all
     .filter((c) => !isSmall(c))
     .map((c) => ({ ...c, bills: [], billsTotal: 0, leftover: c.amount }));
+  // Checks from the last few weeks too, to count "1st / 2nd check of the
+  // month" and to know a bill was already paid by a check before today.
+  const early = addDays(from, -PAY_WINDOW_DAYS - 9);
+  const history = mergeSameDay(
+    applyIncomeEdits(incomes.flatMap((s) => paydays(s, early, to)), edits, early, to),
+  ).filter((c) => !isSmall(c)).sort((a, b) => a.date.localeCompare(b.date));
+  const hasSource = (c: Occurrence, id: string) => (c.sources ?? [c.refId]).includes(id);
+  for (const c of checks) {
+    c.slots = Object.fromEntries((c.sources ?? [c.refId]).map((id) => [id, checkSlot(c, id, history)]));
+  }
 
   // Bills due after the plan ends belong to the next plan, unless they're
   // due before the next paycheck after it (then only these checks can pay).
-  const nextPayday = incomes
-    .flatMap((s) => paydays(s, addDays(to, 1), addDays(to, PAY_WINDOW_DAYS)))
+  const nextPayday = mergeSameDay(incomes.flatMap((s) => paydays(s, addDays(to, 1), addDays(to, PAY_WINDOW_DAYS))))
     .filter((c) => !(c.amount < 0.2 * typical))
     .map((c) => c.date)
     .sort()[0];
@@ -304,6 +364,7 @@ export function buildPaycheckPlan(
 
   type Alloc = { bill: Occurrence; options: PlannedCheck[]; parts: Map<PlannedCheck, number>; custom: boolean };
   const fromCash: Occurrence[] = [];
+  const unplanned = new Map<string, Occurrence>();
   const auto: Alloc[] = [];
   const placed: Alloc[] = [];
   const give = (a: Alloc, check: PlannedCheck, amount: number) => {
@@ -314,18 +375,40 @@ export function buildPaycheckPlan(
 
   for (const bill of billOccurrences) {
     const options = checks.filter((c) => c.date <= bill.date && daysBetween(c.date, bill.date) < PAY_WINDOW_DAYS);
+    // 1. Your own plan: the check you chose (that paycheck's 1st/2nd check
+    //    of the month), else the latest check from that paycheck.
+    const mine = rules.filter((r) => r.billId === bill.refId);
+    if (!mine.length && opts.onlyRules) {
+      if (!unplanned.has(bill.refId)) unplanned.set(bill.refId, bill);
+      continue;
+    }
+    const slotCheck = (r: PlanRule) =>
+      r.slot == null
+        ? undefined
+        : [...history]
+            .reverse()
+            .find(
+              (c) =>
+                hasSource(c, r.sourceId) &&
+                c.date <= bill.date &&
+                daysBetween(c.date, bill.date) < PAY_WINDOW_DAYS &&
+                checkSlot(c, r.sourceId, history) === r.slot,
+            );
+    // Paid by a check you chose that came before today: nothing to plan.
+    if (mine.some((r) => (slotCheck(r)?.date ?? from) < from)) continue;
     if (!options.length) {
       if (bill.date <= to) fromCash.push(bill);
       continue; // or it's due after this window and belongs to the next plan
     }
-    // 1. Your own plan: the latest check from the paycheck you chose.
-    const mine = rules.filter((r) => r.billId === bill.refId);
     let rest = bill.amount;
     if (mine.length) {
       const a: Alloc = { bill, options, parts: new Map(), custom: true };
       const ordered = [...mine.filter((r) => r.amount != null), ...mine.filter((r) => r.amount == null)];
       for (const r of ordered) {
-        const check = [...options].reverse().find((c) => c.refId === r.sourceId);
+        const chosen = slotCheck(r);
+        const check =
+          (chosen && options.find((c) => c.date === chosen.date)) ??
+          [...options].reverse().find((c) => hasSource(c, r.sourceId));
         const amount = cents(Math.min(rest, r.amount ?? rest));
         if (!check || amount <= 0) continue;
         give(a, check, amount);
@@ -430,5 +513,11 @@ export function buildPaycheckPlan(
     c.leftover = cents(c.amount - c.billsTotal);
   }
   const target = checks.length ? checks.reduce((s2, c) => s2 + c.leftover, 0) / checks.length : 0;
-  return { checks, smallIncome, fromCash: fromCash.sort((a, b) => a.date.localeCompare(b.date)), target };
+  return {
+    checks,
+    smallIncome,
+    fromCash: fromCash.sort((a, b) => a.date.localeCompare(b.date)),
+    target,
+    unplanned: [...unplanned.values()].sort((a, b) => b.amount - a.amount),
+  };
 }

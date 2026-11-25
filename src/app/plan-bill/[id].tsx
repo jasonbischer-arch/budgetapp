@@ -42,6 +42,8 @@ export default function PlanBillEditor() {
   const [how, setHow] = useState<How>('mine');
   // Per paycheck: chosen, and the amount ('' = the rest of the bill).
   const [picked, setPicked] = useState<Record<string, { on: boolean; amount: string }>>({});
+  // Which check of the month each paycheck pays from (kept when you save).
+  const [slots, setSlots] = useState<Record<string, number | null>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,6 +56,7 @@ export default function PlanBillEditor() {
       setIncomes(srcs);
       const mine = rules.filter((r) => r.bill_id === id);
       setHow(mine.length ? 'mine' : 'auto');
+      setSlots(Object.fromEntries(mine.map((r) => [r.income_source_id, r.check_slot])));
       const state: Record<string, { on: boolean; amount: string }> = {};
       for (const s of srcs) {
         const r = mine.find((x) => x.income_source_id === s.id);
@@ -89,7 +92,7 @@ export default function PlanBillEditor() {
       const rules =
         how === 'auto'
           ? []
-          : chosen.map((s, i) => ({ income_source_id: s.id, amount: fixedAmounts[i] }));
+          : chosen.map((s, i) => ({ income_source_id: s.id, amount: fixedAmounts[i], check_slot: slots[s.id] ?? null }));
       await savePlanRulesForBill(household.id, bill.id, rules);
       if (rules.length && household.plan_mode !== 'mine') {
         await setPlanMode(household.id, 'mine');
@@ -133,7 +136,8 @@ export default function PlanBillEditor() {
       {how === 'auto' ? (
         <Card>
           <T variant="muted">
-            The plan picks the check(s) for this bill, keeping every paycheck as even as possible.
+            The plan picks the check(s) for this bill, keeping every paycheck as even as possible. In My
+            plan, a bill left automatic waits in “Not on a check yet” until you add it to a check.
           </T>
         </Card>
       ) : (

@@ -62,3 +62,21 @@ const eom: Deposit[] = ["2026-06-30", "2026-07-31", "2026-08-31", "2026-09-30", 
   .map((date) => ({ date, amount: 2500, description: "STATE OF CA PAYROLL", merchant: null }));
 const ca = detectPaychecks(eom, today)[0];
 assert(ca.frequency === "semimonthly" && ca.day1 === 15 && ca.day2 === 31, "15th and last day of the month: " + JSON.stringify([ca.day1, ca.day2]));
+
+// --- Same payer, same day = one paycheck (base pay + commission deposits) ----
+{
+  const { detectPaychecks: detect } = await import("../supabase/functions/_shared/paychecks.ts");
+  const fridays = ["2026-07-10","2026-07-24","2026-08-07","2026-08-21","2026-09-04","2026-09-18","2026-10-02","2026-10-16","2026-10-30","2026-11-13"];
+  const extra: Record<string, number> = { "2026-07-24": 1251.06, "2026-08-21": 1159.33, "2026-09-04": 1997.26, "2026-09-18": 1168.58, "2026-10-02": 1337.84, "2026-10-30": 1050.94 };
+  const deposits = fridays.flatMap((d) => [
+    { date: d, amount: 2843.37, description: "BLUELINX CORPORA PAYROLL", merchant: null },
+    ...(extra[d] ? [{ date: d, amount: extra[d], description: "BLUELINX CORPORA PAYROLL", merchant: null }] : []),
+  ]);
+  const found = detect(deposits, "2026-11-25");
+  if (found.length !== 1) throw new Error("FAIL: one paycheck, not a separate 'monthly' one: " + JSON.stringify(found.map((f) => [f.name, f.frequency, f.day1])));
+  const p = found[0];
+  if (p.frequency !== "biweekly" || p.anchor_date !== "2026-11-13") throw new Error("FAIL: every other Friday from Nov 13: " + p.frequency + " " + p.anchor_date);
+  if (Math.abs(p.low - 2843.37) > 0.01) throw new Error("FAIL: budgets with the dependable base pay: " + p.low);
+  if (!(p.average > p.low)) throw new Error("FAIL: average still reflects commission");
+  console.log("ok - two same-day deposits from one payer = one biweekly Friday paycheck; budget amount = base pay");
+}

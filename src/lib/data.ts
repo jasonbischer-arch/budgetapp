@@ -548,11 +548,13 @@ export interface PlanRuleRow {
   income_source_id: string;
   /** Dollars from this paycheck; null = the rest of the bill. */
   amount: number | null;
+  /** Which of that paycheck's checks each month (1 = first); null = latest before due. */
+  check_slot: number | null;
 }
 
 export async function fetchPlanRules(): Promise<PlanRuleRow[]> {
   const rows = unwrap(
-    await supabase.from('plan_rules').select('id, bill_id, income_source_id, amount').order('created_at'),
+    await supabase.from('plan_rules').select('id, bill_id, income_source_id, amount, check_slot').order('created_at'),
   ) as PlanRuleRow[];
   return rows.map((r) => ({ ...r, amount: num(r.amount) }));
 }
@@ -561,7 +563,7 @@ export async function fetchPlanRules(): Promise<PlanRuleRow[]> {
 export async function savePlanRulesForBill(
   householdId: string,
   billId: string,
-  rules: { income_source_id: string; amount: number | null }[],
+  rules: { income_source_id: string; amount: number | null; check_slot?: number | null }[],
 ) {
   unwrap(await supabase.from('plan_rules').delete().eq('bill_id', billId));
   if (rules.length) {
@@ -569,6 +571,21 @@ export async function savePlanRulesForBill(
       await supabase
         .from('plan_rules')
         .insert(rules.map((r) => ({ ...r, bill_id: billId, household_id: householdId }))),
+    );
+  }
+}
+
+/** Starts your plan from a list of bill → check choices (replaces any plan you had). */
+export async function replacePlanRules(
+  householdId: string,
+  rules: { bill_id: string; income_source_id: string; check_slot: number | null }[],
+) {
+  unwrap(await supabase.from('plan_rules').delete().eq('household_id', householdId));
+  if (rules.length) {
+    unwrap(
+      await supabase
+        .from('plan_rules')
+        .insert(rules.map((r) => ({ ...r, amount: null, household_id: householdId }))),
     );
   }
 }
