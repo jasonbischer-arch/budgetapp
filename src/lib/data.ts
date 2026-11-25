@@ -641,6 +641,10 @@ export interface ManualAsset {
   value_high: number | null;
   valued_at: string | null;
   value_error: string | null;
+  /** Added each month (e.g. your 401k contribution + employer match). */
+  monthly_contribution: number;
+  /** Follows this index (e.g. 'SP500') instead of a fixed yearly rate. */
+  tracks_index: 'SP500' | null;
 }
 
 /** Fields you edit; the valuation fields are written by the server. */
@@ -699,9 +703,33 @@ export async function fetchManualAssets(): Promise<ManualAsset[]> {
     ...r,
     value: Number(r.value),
     annual_change_pct: Number(r.annual_change_pct),
+    monthly_contribution: Number(r.monthly_contribution ?? 0),
     value_low: r.value_low == null ? null : Number(r.value_low),
     value_high: r.value_high == null ? null : Number(r.value_high),
   }));
+}
+
+/** An index's change since a date: closes then and now (e.g. the S&P 500). */
+export async function fetchIndexChange(symbol: 'SP500', since: string) {
+  const [startRows, latestRows] = await Promise.all([
+    supabase.from('market_prices').select('date, close').eq('symbol', symbol).lte('date', since).order('date', { ascending: false }).limit(1),
+    supabase.from('market_prices').select('date, close').eq('symbol', symbol).order('date', { ascending: false }).limit(1),
+  ]);
+  const start = (unwrap(startRows) as { date: string; close: number }[])[0];
+  const latest = (unwrap(latestRows) as { date: string; close: number }[])[0];
+  if (!latest) return null;
+  const from = start ?? latest;
+  return {
+    startDate: from.date,
+    latestDate: latest.date,
+    latestClose: Number(latest.close),
+    changePct: (Number(latest.close) / Number(from.close) - 1) * 100,
+  };
+}
+
+/** Fetches the latest S&P 500 closes now (they also update daily). */
+export async function refreshMarketPrices() {
+  return callFunction<{ saved: number; latest?: { date: string; close: number } }>('market-prices');
 }
 
 /** Saves an asset and returns its id. */

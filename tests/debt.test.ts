@@ -22,3 +22,16 @@ assert(payoff(10000, 24, 150, "2026-11-24").months === null, "payment below inte
 
 assert(currentBalance({ balance: 14625, apr: 6.9, payment: 425.67, balanceDate: "2026-11-01", dueDay: 15, today: "2026-12-20" }) === amortizedBalance(14625, 6.9, 425.67, 2),
   "balance entered Nov 1 has two payments by Dec 20");
+
+// --- Assets you track yourself (401k etc.): matches the database -------------
+{
+  const { assetEstimate, assetProjection } = await import("../src/lib/growth.ts");
+  // public.asset_estimate(50000, current_date - 365, 6, 1000) = 65316.05
+  const v = assetEstimate({ value: 50000, valueDate: "2025-11-25", annualPct: 6, monthly: 1000, today: "2026-11-25" });
+  assert(Math.abs(v - 65316.05) < 0.02, "401k: $50k + $1,000/mo at 6% for a year = $65,316 (same as the database): " + v);
+  // No contributions: the old yearly formula. GMC: 32500 at -15% since Nov 24 = 32485.54 on Nov 25.
+  const gmc = assetEstimate({ value: 32500, valueDate: "2026-11-24", annualPct: -15, today: "2026-11-25" });
+  assert(Math.abs(gmc - 32485.54) < 0.02, "without contributions it matches the old formula: " + gmc);
+  assert(assetEstimate({ value: 1000, valueDate: "2026-11-25", annualPct: 0, monthly: 100, today: "2027-11-25" }) > 2190, "0% return still adds contributions");
+  assert(Math.abs(assetProjection(50000, 6, 1000, 12) - 65339) < 30, "a year from now projection");
+}

@@ -13,18 +13,22 @@ import {
   deleteManualAsset,
   fetchAccounts,
   fetchBills,
+  fetchIndexChange,
   fetchManualAssets,
+  fetchNetWorthItems,
   ManualAsset,
   refreshHomeValue,
+  refreshMarketPrices,
   saveManualAsset,
 } from '@/lib/data';
 import { money, timeAgo } from '@/lib/format';
+import { assetProjection } from '@/lib/growth';
 import { today } from '@/lib/schedule';
 
 const KINDS: { value: AssetKind; label: string; rate: number; hint: string }[] = [
   { value: 'home', label: 'Home', rate: 3, hint: 'Your best estimate of what it would sell for.' },
   { value: 'vehicle', label: 'Vehicle', rate: -15, hint: 'Check a pricing guide for your make, model and mileage.' },
-  { value: 'investment', label: 'Investment', rate: 0, hint: 'An account that isn’t connected (e.g. a pension or HSA).' },
+  { value: 'investment', label: 'Retirement / investment', rate: 6, hint: 'An account that can’t connect (401k, pension, HSA). Use the balance from your latest statement.' },
   { value: 'cash', label: 'Cash', rate: 0, hint: 'Cash or an account that isn’t connected.' },
   { value: 'other', label: 'Other', rate: 0, hint: 'Jewelry, collectibles, a business, money someone owes you…' },
 ];
@@ -56,13 +60,23 @@ export default function AssetEditor() {
   const [original, setOriginal] = useState<{ value: number; date: string } | null>(null);
   const [address, setAddress] = useState('');
   const [autoValue, setAutoValue] = useState(false);
+  // Retirement / investment accounts: follow the S&P 500 or a fixed rate,
+  // plus what goes in each month.
+  const [follows, setFollows] = useState<'SP500' | 'rate'>('SP500');
+  const [contribution, setContribution] = useState('');
+  const [indexChange, setIndexChange] = useState<Awaited<ReturnType<typeof fetchIndexChange>>>(null);
   const [existing, setExisting] = useState<ManualAsset | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
-      const [accounts, bills, assets] = await Promise.all([fetchAccounts(), fetchBills(), fetchManualAssets()]);
+      const [accounts, bills, assets, items] = await Promise.all([
+        fetchAccounts(),
+        fetchBills(),
+        fetchManualAssets(),
+        isNew ? Promise.resolve([]) : fetchNetWorthItems(),
+      ]);
       setLoanAccounts(accounts.filter((a) => a.type === 'loan'));
       setDebtBills(bills.filter((b) => b.is_debt && !b.account_id));
       if (!isNew) {
@@ -70,8 +84,13 @@ export default function AssetEditor() {
         if (!a) return setError('Not found');
         setKind(a.kind);
         setName(a.name);
-        // Start from today's estimate, so saving without changes keeps it.
-        setValue(String(estimateToday(a.value, a.value_date, a.annual_change_pct)));
+        // Start from today's estimate (the same one net worth shows), so saving
+        // without changes keeps it.
+        const shown = items.find((i) => i.source === 'manual' && i.ref_id === a.id)?.amount;
+        setValue(String(shown ?? estimateToday(a.value, a.value_date, a.annual_change_pct)));
+        setFollows(a.tracks_index ? 'SP500' : 'rate');
+        setContribution(a.monthly_contribution ? String(a.monthly_contribution) : '');
+        if (a.tracks_index) fetchIndexChange(a.tracks_index, a.value_date).then(setIndexChange).catch(() => {});
         setRate(String(a.annual_change_pct));
         setOriginal({ value: a.value, date: a.value_date });
         setAddress(a.address ?? '');
@@ -113,7 +132,11 @@ export default function AssetEditor() {
         loan_bill_id: canHaveLoan ? (loan?.bill ?? null) : null,
         address: kind === 'home' && address.trim() ? address.trim() : null,
         auto_value: useAuto,
+        monthly_contribution: kind === 'investment' ? Math.max(0, parseNum(contribution) ?? 0) : 0,
+        tracks_index: kind === 'investment' && follows === 'SP500' ? 'SP500' : null,
       });
+      // Make sure the S&P 500 history is there to follow from today.
+      if (kind === 'investment' && follows === 'SP500') await refreshMarketPrices().catch(() => {});
       // Turning on automatic values (or a new address): look it up now.
       const addressChanged = (existing?.address ?? '') !== address.trim();
       if (useAuto && (!existing?.valued_at || addressChanged)) {
@@ -199,6 +222,49 @@ export default function AssetEditor() {
         )}
       </Card>
 
+      {kind === 'investment' && (
+        <Card>
+          <T variant="small">How it grows</T>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.xs }}>
+            <Chip label="📈 Follows the S&P 500" selected={follows === 'SP500'} onPress={() => setFollows('SP500')} />
+            <Chip label="Fixed % per year" selected={follows === 'rate'} onPress={() => setFollows('rate')} />
+          </View>
+          {follows === 'SP500' && (
+            <T variant="small">
+              Moves with the S&amp;P 500 every day from {original && !isNew ? original.date : 'today'}.
+              {indexChange && original && !isNew
+                ? ` Since then the S&P 500 is ${indexChange.changePct >= 0 ? 'up' : 'down'} ${Math.abs(indexChange.changePct).toFixed(1)}% (as of ${indexChange.latestDate}).`
+                : ''}{' '}
+              It tracks the index price; dividends (about 1.3% a year) aren&apos;t included, so update the balance from
+              your statement now and then.
+            </T>
+          )}
+          <T variant="small">Added each month (you + employer match)</T>
+          <Input
+            value={contribution}
+            onChangeText={setContribution}
+            keyboardType="decimal-pad"
+            placeholder="$0"
+            accessibilityLabel="Monthly contribution"
+          />
+          {amount != null && (
+            <T variant="small">
+              In a year: about{' '}
+              {money(
+                assetProjection(
+                  amount,
+                  follows === 'SP500' ? 6 : pct,
+                  Math.max(0, parseNum(contribution) ?? 0),
+                  12,
+                ),
+              )}
+              {follows === 'SP500' ? ' if the S&P 500 returns a typical 6% (it varies a lot year to year).' : '.'}
+            </T>
+          )}
+        </Card>
+      )}
+
+      {!(kind === 'investment' && follows === 'SP500') && (
       <Card>
         <T variant="small">Change per year (%)</T>
         <Input value={rate} onChangeText={setRate} keyboardType="numbers-and-punctuation" placeholder="0" />
@@ -208,9 +274,10 @@ export default function AssetEditor() {
             : pct < 0
               ? `Loses ${Math.abs(pct)}% of its value a year until you update it.`
               : 'Stays at this value until you update it.'}
-          {amount ? ` In a year: about ${money(amount * (1 + pct / 100))}.` : ''}
+          {amount && kind !== 'investment' ? ` In a year: about ${money(amount * (1 + pct / 100))}.` : ''}
         </T>
       </Card>
+      )}
 
       {kind === 'home' && (
         <Card>

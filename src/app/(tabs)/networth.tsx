@@ -263,6 +263,11 @@ export default function NetWorth() {
           bank. Retirement accounts are shown before taxes.
         </T>
         <T variant="small">
+          • Retirement accounts that can&apos;t connect can follow the S&amp;P 500 from the day you enter the
+          balance (plus what you add each month). They show UPDATE after 90 days: enter the balance from your
+          statement to stay accurate.
+        </T>
+        <T variant="small">
           • Homes can update automatically: turn it on and add the address, and a market estimate
           (similar to a Zestimate, from RentCast) is fetched on the 1st of each month. Otherwise
           homes and vehicles use your estimate, adjusted each year by the rate you choose (homes
@@ -279,6 +284,12 @@ export default function NetWorth() {
       </Card>
     </Screen>
   );
+}
+
+/** A retirement/investment balance you haven't updated from a statement in 90+ days. */
+function stale(a: ManualAsset | undefined) {
+  if (!a || a.kind !== 'investment') return false;
+  return (Date.now() - Date.parse(a.value_date)) / 86_400_000 > 90;
 }
 
 function Group({
@@ -326,8 +337,26 @@ function Group({
                   </T>
                   {i.source === 'manual' && (
                     <Badge
-                      text={manual?.value_error ? 'CHECK' : manual?.auto_value ? 'AUTO' : manual ? 'ESTIMATE' : '↓ MONTHLY'}
-                      tone={manual?.value_error ? 'warning' : manual?.auto_value ? 'primary' : 'neutral'}
+                      text={
+                        manual?.value_error
+                          ? 'CHECK'
+                          : stale(manual)
+                            ? 'UPDATE'
+                            : manual?.tracks_index
+                              ? 'S&P 500'
+                              : manual?.auto_value
+                                ? 'AUTO'
+                                : manual
+                                  ? 'ESTIMATE'
+                                  : '↓ MONTHLY'
+                      }
+                      tone={
+                        manual?.value_error || stale(manual)
+                          ? 'warning'
+                          : manual?.tracks_index || manual?.auto_value
+                            ? 'primary'
+                            : 'neutral'
+                      }
                     />
                   )}
                 </Row>
