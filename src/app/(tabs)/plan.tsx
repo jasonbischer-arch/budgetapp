@@ -32,6 +32,8 @@ import {
   detectRecurring,
   IncomeSource,
   resetCategoryBudget,
+  addPlanRule,
+  deletePlanRules,
   replacePlanRules,
   savePlanRulesForBill,
   markBudgetHelpDone,
@@ -139,10 +141,12 @@ function usePlan(data: HouseholdData, mode: 'even' | 'mine') {
     const rules =
       mode === 'mine'
         ? data.planRules.map((r) => ({
+            id: r.id,
             billId: r.bill_id,
             sourceId: r.income_source_id,
             amount: r.amount,
             slot: r.check_slot,
+            fraction: r.fraction,
           }))
         : [];
     // My plan: only the bills you put on a check; the rest wait in a list.
@@ -220,39 +224,39 @@ function PaycheckPlanView({
     );
   }
 
-  async function removeBill(billId: string) {
-    if (!household) return;
-    setPending((s) => new Set(s).add(billId));
+  /** Hides keys right away while a change saves (undone if it fails). */
+  async function whilePending(keys: string[], save: () => Promise<void>) {
+    setPending((s) => new Set([...s, ...keys]));
     try {
-      await savePlanRulesForBill(household.id, billId, []);
+      await save();
       reload();
     } catch (e) {
-      setPending((s) => {
-        const n = new Set(s);
-        n.delete(billId);
-        return n;
-      });
+      setPending((s) => new Set([...s].filter((k) => !keys.includes(k))));
       setModeErr(e instanceof Error ? e.message : String(e));
     }
   }
 
-  async function addBill(check: PlannedCheck, billId: string) {
+  /** Swipe: takes this piece of the bill off this check (other pieces stay). */
+  function removePiece(b: PlannedBill) {
+    if (!household) return;
+    const ids = b.ruleIds ?? [];
+    whilePending(ids.length ? ids : [b.refId], () =>
+      ids.length ? deletePlanRules(ids) : savePlanRulesForBill(household.id, b.refId, []),
+    );
+  }
+
+  /** Puts a bill on a check: the whole bill, or a share of it (1/2, 1/4). */
+  function addBill(check: PlannedCheck, billId: string, fraction: number | null) {
     if (!household) return;
     const source = check.sources?.[0] ?? check.refId;
-    setPending((s) => new Set(s).add(billId));
-    try {
-      await savePlanRulesForBill(household.id, billId, [
-        { income_source_id: source, amount: null, check_slot: check.slots?.[source] ?? null },
-      ]);
-      reload();
-    } catch (e) {
-      setPending((s) => {
-        const n = new Set(s);
-        n.delete(billId);
-        return n;
-      });
-      setModeErr(e instanceof Error ? e.message : String(e));
-    }
+    whilePending([billId], () =>
+      addPlanRule(household.id, {
+        bill_id: billId,
+        income_source_id: source,
+        check_slot: check.slots?.[source] ?? null,
+        fraction,
+      }),
+    );
   }
 
   if (!data.incomes.length || !data.bills.length) {
@@ -278,12 +282,36 @@ function PaycheckPlanView({
   const minLeft = Math.min(...lefts);
   const maxLeft = Math.max(...lefts);
   const fixedTotal = p.plan.checks.reduce((s2, x) => s2 + x.billsTotal, 0);
-  // Fixed bills you can still add: not on any check in your plan.
-  const available = p.fixed
-    .filter((b) => !ruleBills.has(b.id) && !pending.has(b.id))
-    .map((b) => ({ bill: b, amount: toBillSchedule(b, data.liabilities).amount }))
-    .filter((x) => x.amount > 0)
-    .sort((a, b) => b.amount - a.amount);
+  // How much of each bill your plan already places (1 = all of it).
+  const billAmount = (id: string) => {
+    const b = p.fixed.find((x) => x.id === id);
+    return b ? toBillSchedule(b, data.liabilities).amount : 0;
+  };
+  const placedShare = new Map<string, number>();
+  for (const r of data.planRules) {
+    const amt = billAmount(r.bill_id);
+    const sh = r.fraction ?? (r.amount != null && amt > 0 ? Math.min(1, r.amount / amt) : 1);
+    placedShare.set(r.bill_id, Math.min(1, (placedShare.get(r.bill_id) ?? 0) + sh));
+  }
+  // Fixed bills you can still add to a check: some of the bill is left to
+  // place, and it isn't on this check already.
+  const choicesFor = (check: PlannedCheck) => {
+    const sources = check.sources ?? [check.refId];
+    const onThis = new Set(
+      data.planRules
+        .filter(
+          (r) =>
+            sources.includes(r.income_source_id) &&
+            (r.check_slot == null || r.check_slot === check.slots?.[r.income_source_id]),
+        )
+        .map((r) => r.bill_id),
+    );
+    return p.fixed
+      .filter((b) => !onThis.has(b.id) && !pending.has(b.id))
+      .map((b) => ({ bill: b, amount: billAmount(b.id), left: 1 - (placedShare.get(b.id) ?? 0) }))
+      .filter((x) => x.amount > 0 && x.left > 0.001)
+      .sort((a, b) => b.amount - a.amount);
+  };
   const notPlanned = mode === 'mine' ? p.plan.unplanned.filter((u) => !pending.has(u.refId)) : [];
 
   return (
@@ -308,7 +336,7 @@ function PaycheckPlanView({
         <T color={c.heroMuted}>
           {mode === 'even'
             ? `Your fixed bills (${moneyWhole(fixedTotal)}) are divided across your ${p.plan.checks.length} checks so every check keeps the same amount. A bill is split between checks when needed, and always paid from checks that arrive before it's due.`
-            : `You choose which check pays each bill. Swipe a bill left to take it off a check, and tap ＋ Add bill to put one on. Each bill stays on that check every month.`}
+            : `You choose which check pays each bill: all of it, half or a quarter. Swipe a bill left to take it off a check, and tap ＋ Add bill to put one on. Each bill stays on that check every month.`}
         </T>
       </GradientCard>
 
@@ -359,7 +387,7 @@ function PaycheckPlanView({
               data={data}
               editable={mode === 'mine'}
               hidden={pending}
-              onRemove={removeBill}
+              onRemove={removePiece}
               onAdd={() => setAddTo(check)}
             />
           ))}
@@ -369,8 +397,8 @@ function PaycheckPlanView({
       <AddBillSheet
         check={addTo}
         data={data}
-        available={available}
-        onPick={(billId) => addTo && addBill(addTo, billId)}
+        available={addTo ? choicesFor(addTo) : []}
+        onPick={(billId, fraction) => addTo && addBill(addTo, billId, fraction)}
         onClose={() => setAddTo(null)}
       />
     </>
@@ -389,11 +417,14 @@ function CheckCard({
   data: HouseholdData;
   editable: boolean;
   hidden: Set<string>;
-  onRemove: (billId: string) => void;
+  onRemove: (bill: PlannedBill) => void;
   onAdd: () => void;
 }) {
   const c = useTheme();
-  const bills = check.bills.filter((b) => !hidden.has(b.refId));
+  // Hide a piece you just removed while it saves.
+  const bills = check.bills.filter((b) =>
+    b.ruleIds?.length ? !b.ruleIds.every((id) => hidden.has(id)) : !hidden.has(b.refId),
+  );
   const billsTotal = bills.reduce((s2, b) => s2 + b.amount, 0);
   const left = Math.round((check.amount - billsTotal) * 100) / 100;
   return (
@@ -432,7 +463,7 @@ function CheckCard({
       )}
       <View style={{ gap: 2 }}>
         {bills.map((b) => (
-          <PlanBillRow key={b.id} bill={b} data={data} editable={editable} onRemove={() => onRemove(b.refId)} />
+          <PlanBillRow key={b.id} bill={b} data={data} editable={editable} onRemove={() => onRemove(b)} />
         ))}
       </View>
 
@@ -462,7 +493,13 @@ function CheckCard({
   );
 }
 
-/** One bill on a check. In My plan: swipe left to take it off, tap to split it. */
+/** "1/4", "1/2"... for a share of a bill, or null if it isn't a simple one. */
+function shareLabel(f: number): string | null {
+  const known: [number, string][] = [[0.25, '¼'], [0.5, '½'], [0.75, '¾']];
+  return known.find(([x]) => Math.abs(f - x) < 0.005)?.[1] ?? null;
+}
+
+/** One bill on a check. In My plan: swipe left to take it off. */
 function PlanBillRow({
   bill: b,
   data,
@@ -477,25 +514,22 @@ function PlanBillRow({
   const c = useTheme();
   const full = data.bills.find((x) => x.id === b.refId);
   const emoji = full ? billEmoji(full, data.categories.find((x) => x.id === full.category_id)) : '🧾';
+  const piece = b.split ? shareLabel(b.amount / b.fullAmount) : null;
   const row = (
-    <Pressable
-      disabled={!editable}
-      accessibilityRole={editable ? 'button' : undefined}
-      accessibilityLabel={editable ? `${b.name}: tap to split between checks` : undefined}
+    <View
+      accessible
+      accessibilityLabel={`${b.name}, ${money(b.amount)}`}
       accessibilityActions={editable ? [{ name: 'delete', label: 'Remove from this check' }] : undefined}
       onAccessibilityAction={(e) => e.nativeEvent.actionName === 'delete' && onRemove()}
-      onPress={() => router.push({ pathname: '/plan-bill/[id]', params: { id: b.refId } })}
-      style={({ pressed }) => [
-        styles.billRow,
-        { backgroundColor: pressed ? c.cardAlt : c.card, borderRadius: Radius.md },
-      ]}>
+      style={[styles.billRow, { backgroundColor: c.card, borderRadius: Radius.md }]}>
       <IconBubble emoji={emoji} color={c.primary} size={36} />
       <View style={{ flex: 1, minWidth: 0 }}>
         <T numberOfLines={1} style={{ fontWeight: '600' }}>
           {b.name}
         </T>
         <T variant="small" numberOfLines={1}>
-          {b.split ? `${money(b.amount)} of ${money(b.fullAmount)} · ` : ''}due {weekday(b.date).slice(0, 3)}{' '}
+          {b.split ? `${piece ? `${piece} of` : `${money(b.amount)} of`} ${money(b.fullAmount)} · ` : ''}due{' '}
+          {weekday(b.date).slice(0, 3)}{' '}
           {shortDate(b.date)}
         </T>
       </View>
@@ -513,7 +547,7 @@ function PlanBillRow({
           </T>
         </Pressable>
       )}
-    </Pressable>
+    </View>
   );
   if (!editable || Platform.OS === 'web') return row;
   return (
@@ -535,7 +569,8 @@ function PlanBillRow({
   );
 }
 
-/** Pick a fixed bill to put on a check. A bill you've placed disappears from the list. */
+/** Pick a fixed bill to put on a check: all of it, half or a quarter. A bill
+ * that's fully placed disappears from the list. */
 function AddBillSheet({
   check,
   data,
@@ -545,8 +580,8 @@ function AddBillSheet({
 }: {
   check: PlannedCheck | null;
   data: HouseholdData;
-  available: { bill: HouseholdData['bills'][number]; amount: number }[];
-  onPick: (billId: string) => void;
+  available: { bill: HouseholdData['bills'][number]; amount: number; left: number }[];
+  onPick: (billId: string, fraction: number | null) => void;
   onClose: () => void;
 }) {
   const c = useTheme();
@@ -569,35 +604,66 @@ function AddBillSheet({
             </View>
             <Button title="Done" kind="secondary" onPress={onClose} />
           </Row>
+          <T variant="small">Pay all of it from this check, or split it: ½ or ¼ (add the rest to other checks).</T>
           {available.length === 0 ? (
             <T variant="muted" style={{ paddingVertical: Spacing.lg }}>
-              Every fixed bill is already on a check. Swipe one off a check to move it here.
+              Every fixed bill is already planned. Swipe one off a check to move it here.
             </T>
           ) : (
             <ScrollView style={{ flexGrow: 0 }} contentContainerStyle={{ gap: Spacing.xs }}>
-              {available.map(({ bill, amount }) => (
-                <Pressable
-                  key={bill.id}
-                  onPress={() => onPick(bill.id)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Add ${bill.name}, ${money(amount)}`}
-                  style={({ pressed }) => [styles.pickRow, { backgroundColor: pressed ? c.primarySoft : c.cardAlt }]}>
-                  <IconBubble
-                    emoji={billEmoji(bill, data.categories.find((x) => x.id === bill.category_id))}
-                    color={c.primary}
-                  />
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <T numberOfLines={1} style={{ fontWeight: '600' }}>
-                      {bill.name}
-                    </T>
-                    <T variant="small">Due the {ordinal(bill.due_day)}</T>
+              {available.map(({ bill, amount, left }) => {
+                const whole = left > 0.999;
+                const leftLabel = shareLabel(left) ?? `${Math.round(left * 100)}%`;
+                const choices: { label: string; fraction: number | null }[] = [
+                  // All of it, or the part that isn't on a check yet.
+                  { label: whole ? 'All' : `Rest (${leftLabel})`, fraction: whole ? null : Math.round(left * 10000) / 10000 },
+                  ...(left > 0.501 ? [{ label: '½', fraction: 0.5 }] : []),
+                  ...(left > 0.251 ? [{ label: '¼', fraction: 0.25 }] : []),
+                ];
+                return (
+                  <View key={bill.id} style={[styles.pickRow, { backgroundColor: c.cardAlt }]}>
+                    <IconBubble
+                      emoji={billEmoji(bill, data.categories.find((x) => x.id === bill.category_id))}
+                      color={c.primary}
+                    />
+                    <View style={{ flex: 1, minWidth: 0, gap: Spacing.xs }}>
+                      <View>
+                        <T numberOfLines={1} style={{ fontWeight: '600' }}>
+                          {bill.name}
+                        </T>
+                        <T variant="small">
+                          {money(amount)} · due the {ordinal(bill.due_day)}
+                          {whole ? '' : ` · ${leftLabel} not on a check yet`}
+                        </T>
+                      </View>
+                      <Row style={{ gap: Spacing.xs, flexWrap: 'wrap' }}>
+                        {choices.map((ch) => (
+                          <Pressable
+                            key={ch.label}
+                            onPress={() => onPick(bill.id, ch.fraction)}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Add ${ch.label === 'All' ? 'all of' : ch.label + ' of'} ${bill.name}: ${money(
+                              ch.fraction == null ? amount * left : amount * ch.fraction,
+                            )}`}
+                            style={({ pressed }) => [
+                              styles.shareChip,
+                              { borderColor: c.primary, backgroundColor: pressed ? c.primary : c.card },
+                            ]}>
+                            {({ pressed }) => (
+                              <T color={pressed ? c.primaryText : c.primary} style={{ fontWeight: '700', fontSize: 14 }}>
+                                ＋ {ch.label}{' '}
+                                <T color={pressed ? c.primaryText : c.textSecondary} style={{ fontSize: 13 }}>
+                                  {money(ch.fraction == null ? amount * left : amount * ch.fraction)}
+                                </T>
+                              </T>
+                            )}
+                          </Pressable>
+                        ))}
+                      </Row>
+                    </View>
                   </View>
-                  <T variant="money">{money(amount)}</T>
-                  <T color={c.primary} style={{ fontSize: 20, fontWeight: '700' }}>
-                    ＋
-                  </T>
-                </Pressable>
-              ))}
+                );
+              })}
             </ScrollView>
           )}
         </Pressable>
@@ -1343,4 +1409,5 @@ const styles = StyleSheet.create({
   sheet: { borderTopLeftRadius: Radius.lg + 4, borderTopRightRadius: Radius.lg + 4, padding: Spacing.lg, gap: Spacing.sm, maxHeight: '80%', width: '100%', maxWidth: 760, alignSelf: 'center' },
   grabber: { width: 40, height: 5, borderRadius: 3, alignSelf: 'center', marginBottom: Spacing.sm },
   pickRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, padding: Spacing.md, borderRadius: Radius.md },
+  shareChip: { borderWidth: 1.5, borderRadius: Radius.pill, paddingHorizontal: Spacing.md, paddingVertical: 6 },
 });

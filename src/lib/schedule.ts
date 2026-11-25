@@ -205,6 +205,8 @@ export interface PlannedBill extends Occurrence {
   split: boolean;
   /** Placed by your own plan (a rule you set), not automatically. */
   custom?: boolean;
+  /** The rules of yours that put this bill on this check. */
+  ruleIds?: string[];
 }
 
 /**
@@ -213,6 +215,8 @@ export interface PlannedBill extends Occurrence {
  * pays the rest.
  */
 export interface PlanRule {
+  /** The saved rule's id (to remove just this piece). */
+  id?: string;
   billId: string;
   /** The income source (paycheck schedule) to pay from. */
   sourceId: string;
@@ -223,6 +227,8 @@ export interface PlanRule {
    * month). null = the latest check before the bill is due.
    */
   slot?: number | null;
+  /** A share of the bill (0.25 = a quarter) instead of a dollar amount. */
+  fraction?: number | null;
 }
 
 /** Plan options. */
@@ -364,7 +370,13 @@ export function buildPaycheckPlan(
     .filter((b) => b.amount > 0)
     .filter((b) => b.date <= to || (nextPayday ? b.date < nextPayday : true));
 
-  type Alloc = { bill: Occurrence; options: PlannedCheck[]; parts: Map<PlannedCheck, number>; custom: boolean };
+  type Alloc = {
+    bill: Occurrence;
+    options: PlannedCheck[];
+    parts: Map<PlannedCheck, number>;
+    custom: boolean;
+    ruleIds?: Map<PlannedCheck, string[]>;
+  };
   const fromCash: Occurrence[] = [];
   const unplanned = new Map<string, Occurrence>();
   const auto: Alloc[] = [];
@@ -396,30 +408,45 @@ export function buildPaycheckPlan(
                 daysBetween(c.date, bill.date) < PAY_WINDOW_DAYS &&
                 checkSlot(c, r.sourceId, history) === r.slot,
             );
-    // Paid by a check you chose that came before today: nothing to plan.
-    if (mine.some((r) => (slotCheck(r)?.date ?? from) < from)) continue;
+    // What each rule pays: a dollar amount, a share (1/2, 1/4), or the rest.
+    const share = (r: PlanRule) =>
+      r.amount != null ? r.amount : r.fraction != null ? cents(bill.amount * r.fraction) : null;
+    const ordered = [...mine.filter((r) => share(r) != null), ...mine.filter((r) => share(r) == null)];
+    // Shares that add up to the whole bill: the last one takes the rest (no stray cents).
+    const sharesWhole = mine.reduce((s2, r) => s2 + (r.fraction ?? 0), 0) >= 0.999;
+    let rest = bill.amount;
+    const a: Alloc = { bill, options, parts: new Map(), custom: true, ruleIds: new Map() };
+    ordered.forEach((r, i) => {
+      const last = i === ordered.length - 1;
+      const amount = cents(share(r) == null || (last && sharesWhole) ? rest : Math.min(rest, share(r)!));
+      if (amount <= 0) return;
+      const chosen = slotCheck(r);
+      // Paid by a check you chose that came before today: already covered.
+      if (chosen && chosen.date < from) {
+        rest = cents(rest - amount);
+        return;
+      }
+      const check =
+        (chosen && options.find((c) => c.date === chosen.date)) ??
+        [...options].reverse().find((c) => hasSource(c, r.sourceId));
+      if (!check) return;
+      give(a, check, amount);
+      if (r.id) a.ruleIds!.set(check, [...(a.ruleIds!.get(check) ?? []), r.id]);
+      rest = cents(rest - amount);
+    });
+    if (a.parts.size) placed.push(a);
+    if (rest <= 0.004) continue;
+    if (mine.length && opts.onlyRules) {
+      // Your plan covers only part of it (e.g. 1/2 so far): the rest waits.
+      if (!unplanned.has(bill.refId) && options.length) unplanned.set(bill.refId, { ...bill, amount: rest });
+      continue;
+    }
     if (!options.length) {
-      if (bill.date <= to) fromCash.push(bill);
+      if (bill.date <= to) fromCash.push({ ...bill, amount: rest });
       continue; // or it's due after this window and belongs to the next plan
     }
-    let rest = bill.amount;
-    if (mine.length) {
-      const a: Alloc = { bill, options, parts: new Map(), custom: true };
-      const ordered = [...mine.filter((r) => r.amount != null), ...mine.filter((r) => r.amount == null)];
-      for (const r of ordered) {
-        const chosen = slotCheck(r);
-        const check =
-          (chosen && options.find((c) => c.date === chosen.date)) ??
-          [...options].reverse().find((c) => hasSource(c, r.sourceId));
-        const amount = cents(Math.min(rest, r.amount ?? rest));
-        if (!check || amount <= 0) continue;
-        give(a, check, amount);
-        rest = cents(rest - amount);
-      }
-      if (a.parts.size) placed.push(a);
-    }
     // Anything your plan doesn't cover (or no rule) is planned automatically.
-    if (rest > 0.004) auto.push({ bill: { ...bill, amount: rest }, options, parts: new Map(), custom: false });
+    auto.push({ bill: { ...bill, amount: rest }, options, parts: new Map(), custom: false });
   }
 
   // 2. Whole bills: largest first onto the eligible check with the most left.
@@ -491,6 +518,7 @@ export function buildPaycheckPlan(
         fullAmount: a.bill.amount, // set to the whole bill below
         split: false,
         custom: a.custom,
+        ruleIds: a.ruleIds?.get(check),
       });
     }
   }
@@ -507,8 +535,10 @@ export function buildPaycheckPlan(
     const merged = new Map<string, PlannedBill>();
     for (const b of c.bills) {
       const m = merged.get(b.id);
-      if (m) m.amount = cents(m.amount + b.amount);
-      else merged.set(b.id, { ...b });
+      if (m) {
+        m.amount = cents(m.amount + b.amount);
+        m.ruleIds = [...(m.ruleIds ?? []), ...(b.ruleIds ?? [])];
+      } else merged.set(b.id, { ...b });
     }
     c.bills = [...merged.values()].sort((x, y) => x.date.localeCompare(y.date));
     c.billsTotal = cents(c.bills.reduce((s2, b) => s2 + b.amount, 0));

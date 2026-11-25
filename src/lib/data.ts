@@ -550,13 +550,15 @@ export interface PlanRuleRow {
   amount: number | null;
   /** Which of that paycheck's checks each month (1 = first); null = latest before due. */
   check_slot: number | null;
+  /** A share of the bill (0.25 = a quarter); null = an amount, or the rest. */
+  fraction: number | null;
 }
 
 export async function fetchPlanRules(): Promise<PlanRuleRow[]> {
   const rows = unwrap(
-    await supabase.from('plan_rules').select('id, bill_id, income_source_id, amount, check_slot').order('created_at'),
+    await supabase.from('plan_rules').select('id, bill_id, income_source_id, amount, check_slot, fraction').order('created_at'),
   ) as PlanRuleRow[];
-  return rows.map((r) => ({ ...r, amount: num(r.amount) }));
+  return rows.map((r) => ({ ...r, amount: num(r.amount), fraction: num(r.fraction) }));
 }
 
 /** Replaces how one bill is paid in your plan ([] = back to automatic). */
@@ -588,6 +590,19 @@ export async function replacePlanRules(
         .insert(rules.map((r) => ({ ...r, amount: null, household_id: householdId }))),
     );
   }
+}
+
+/** Puts (part of) a bill on one check in your plan. */
+export async function addPlanRule(
+  householdId: string,
+  rule: { bill_id: string; income_source_id: string; check_slot: number | null; fraction: number | null },
+) {
+  unwrap(await supabase.from('plan_rules').insert({ ...rule, amount: null, household_id: householdId }));
+}
+
+/** Takes pieces of a bill off a check in your plan. */
+export async function deletePlanRules(ids: string[]) {
+  if (ids.length) unwrap(await supabase.from('plan_rules').delete().in('id', ids));
 }
 
 /** Clears your whole plan (every bill back to automatic). */

@@ -133,3 +133,25 @@ assert(paydays(firsts, "2026-07-25", "2026-07-31").map(p => p.date)[0] === "2026
   assert(p.unplanned.map((u) => u.refId).sort().join(",") === "gym,phone", "bills you haven't added are listed, not placed");
   assert(p.checks.every((c) => c.bills.every((b) => b.refId === "rent")), "nothing else is placed automatically");
 }
+
+{
+  // My plan: 1/4 of daycare from each of 4 checks (his every other Friday, hers on the 7th and 22nd).
+  const { buildPaycheckPlan: build } = await import("../src/lib/schedule.ts");
+  const his = { id: "his", name: "His", amount: 2853, frequency: "biweekly" as const, anchor_date: "2026-11-13", day1: null, day2: null };
+  const hers = { id: "hers", name: "Hers", amount: 1778.64, frequency: "semimonthly" as const, anchor_date: null, day1: 7, day2: 22, weekend_shift: "before" as const };
+  const daycare = { id: "dc", name: "Daycare", amount: 1375, frequency: "monthly" as const, due_day: 28, due_month: null };
+  const q = (sourceId: string, slot: number, id: string) => ({ id, billId: "dc", sourceId, amount: null, slot, fraction: 0.25 });
+  const rules = [q("his", 1, "r1"), q("his", 2, "r2"), q("hers", 1, "r3"), q("hers", 2, "r4")];
+  const p = build([his, hers], [daycare], "2026-11-25", "2027-01-31", [], rules, { onlyRules: true });
+  const dec = p.checks.filter((c) => c.date.startsWith("2026-12"));
+  const pieces = dec.map((c) => c.bills.find((b) => b.refId === "dc")?.amount ?? 0);
+  console.log("  December daycare per check:", dec.map((c, i) => c.date + " " + pieces[i]).join(", "));
+  assert(dec.length === 4 && pieces.every((x) => Math.abs(x - 343.75) < 0.01), "December: 1/4 of daycare ($343.75) on each of the 4 checks");
+  const total = p.checks.flatMap((c) => c.bills).filter((b) => b.refId === "dc" && b.date === "2026-12-28").reduce((s2, b) => s2 + b.amount, 0);
+  assert(Math.abs(total - 1375) < 0.01, "the 4 quarters add up to the whole bill");
+  const nov = p.checks.find((c) => c.date === "2026-11-27")!;
+  assert(Math.abs((nov.bills.find((b) => b.refId === "dc")?.amount ?? 0) - 343.75) < 0.01 && !p.unplanned.length, "Nov: the quarters already paid before today aren't asked for again");
+  assert(dec.every((c) => (c.bills.find((b) => b.refId === "dc")?.ruleIds ?? []).length === 1), "each quarter knows its rule (swipe removes just that one)");
+  const half = build([his, hers], [daycare], "2026-11-25", "2027-01-31", [], [q("his", 1, "r1"), { ...q("his", 2, "r2"), fraction: 0.25 }], { onlyRules: true });
+  assert(half.unplanned.length === 1 && Math.abs(half.unplanned[0].amount - 687.5) < 0.01, "only half placed: the other half waits in 'Not on a check yet'");
+}
