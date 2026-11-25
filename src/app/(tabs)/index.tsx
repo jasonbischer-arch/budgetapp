@@ -26,7 +26,6 @@ import {
   householdPlan,
   incomingChecks,
   monthlyCashFlow,
-  toBillSchedule,
   useHouseholdData,
 } from '@/lib/household-data';
 import { categoryEmoji } from '@/lib/visuals';
@@ -38,7 +37,6 @@ import {
   totalsFor,
   trailingAverages,
 } from '@/lib/insights';
-import { dueDates, endOfMonth, today } from '@/lib/schedule';
 
 type Period = '1' | '3' | '6' | '12';
 const PERIODS: { value: Period; label: string }[] = [
@@ -68,47 +66,17 @@ export default function Overview() {
   const { commission, split } = cf;
   const expectedIncome = cf.income;
 
-  // Rest of this month: paychecks still coming, and what your plan pays from
-  // them (e.g. 1/4 of daycare from each check, even when it's due next month).
+  // Next paycheck: the same check, bills and leftover as Plan -> Plan.
   const planMode = household?.plan_mode ?? 'even';
-  const rest = useMemo(() => {
-    const from = today();
-    const to = endOfMonth(from);
-    const checks = incomingChecks(data.incomes, data.expected, from, to);
-    const { plan, fixed } = householdPlan(data, planMode);
-    type Out = { id: string; name: string; date: string; due: string; amount: number; note: string };
-    const out: Out[] = [];
-    // Fixed bills: the pieces your plan takes from this month's checks.
-    for (const check of plan.checks.filter((x) => x.date <= to)) {
-      for (const b of check.bills) {
-        const share = b.split ? shareLabel(b.amount / b.fullAmount) : null;
-        out.push({
-          id: `${check.id}:${b.id}`,
-          name: share ? `${b.name} (${share})` : b.name,
-          date: check.date,
-          due: b.date,
-          amount: b.amount,
-          note: `from ${weekday(check.date).slice(0, 3)} ${shortDate(check.date)} check${b.date !== check.date ? ` · due ${shortDate(b.date)}` : ''}`,
-        });
-      }
-    }
-    // Due before any paycheck can cover them, or not on a check in your plan yet.
-    for (const b of [...plan.fromCash, ...plan.unplanned].filter((x) => x.date <= to)) {
-      out.push({ id: `x:${b.id}`, name: b.name, date: b.date, due: b.date, amount: b.amount, note: `due ${shortDate(b.date)} · not on a check` });
-    }
-    // Other bills (variable bills, card payments) still due this month.
-    const fixedIds = new Set(fixed.map((b) => b.id));
-    for (const b of data.bills
-      .filter((x) => !fixedIds.has(x.id))
-      .map((x) => toBillSchedule(x, data.liabilities))
-      .flatMap((x) => dueDates(x, from, to))
-      .filter((x) => x.amount > 0)) {
-      out.push({ id: b.id, name: b.name, date: b.date, due: b.date, amount: b.amount, note: `due ${shortDate(b.date)}` });
-    }
-    const bills = out.sort((x, y) => x.date.localeCompare(y.date) || x.name.localeCompare(y.name));
-    const incoming = checks.reduce((s2, x) => s2 + x.amount, 0);
-    const outgoing = bills.reduce((s2, x) => s2 + x.amount, 0);
-    return { checks, bills, incoming, outgoing };
+  const next = useMemo(() => {
+    const { plan } = householdPlan(data, planMode);
+    const check = plan.checks[0];
+    if (!check) return null;
+    // The deposits on that payday (to edit an amount, e.g. commission).
+    const deposits = incomingChecks(data.incomes, data.expected, check.date, check.date).filter(
+      (x) => !check.sources || !x.sourceId || check.sources.includes(x.sourceId),
+    );
+    return { check, deposits };
   }, [data, planMode]);
 
   // Monthly budget check-in: the first week of each month, until you act.
@@ -265,15 +233,19 @@ export default function Overview() {
         <Button title="💡 Find ways to cut" onPress={() => router.push('/savings')} />
       </Card>
 
-      {/* Rest of this month */}
-      <SectionHeader title={`Rest of ${monthName}`} action={noPlan ? undefined : 'Plan'} onAction={() => router.push('/plan')} />
+      {/* Next paycheck (matches Plan -> Plan) */}
+      <SectionHeader
+        title={next ? `Next paycheck · ${weekday(next.check.date)}, ${shortDate(next.check.date)}` : 'Next paycheck'}
+        action={noPlan ? undefined : 'Plan'}
+        onAction={() => router.push('/plan')}
+      />
       <Card>
-        {noPlan ? (
+        {noPlan || !next ? (
           <>
-            <T variant="heading">See what&apos;s still coming</T>
+            <T variant="heading">See your next paycheck</T>
             <T variant="muted">
-              Add your paychecks and bills in Plan to see what&apos;s incoming and what&apos;s still due
-              this month.
+              Add your paychecks and bills in Plan to see what&apos;s coming in on your next payday and which
+              bills it pays.
             </T>
             <Button title="Set up paychecks & bills" kind="secondary" onPress={() => router.push('/plan')} />
           </>
@@ -283,32 +255,31 @@ export default function Overview() {
               <View style={{ flex: 1 }}>
                 <T variant="small">Incoming</T>
                 <T variant="money" color={c.positive} style={{ fontSize: 20 }}>
-                  {moneyWhole(rest.incoming)}
+                  {moneyWhole(next.check.amount)}
                 </T>
               </View>
               <View style={{ flex: 1 }}>
-                <T variant="small">Bills left</T>
+                <T variant="small">Outgoing</T>
                 <T variant="money" style={{ fontSize: 20 }}>
-                  {moneyWhole(rest.outgoing)}
+                  {moneyWhole(next.check.billsTotal)}
                 </T>
               </View>
               <View style={{ flex: 1, alignItems: 'flex-end' }}>
                 <T variant="small">Difference</T>
                 <T
                   variant="money"
-                  color={rest.incoming - rest.outgoing >= 0 ? c.positive : c.negative}
+                  color={next.check.leftover >= 0 ? c.positive : c.negative}
                   style={{ fontSize: 20 }}>
-                  {moneyWhole(rest.incoming - rest.outgoing)}
+                  {moneyWhole(next.check.leftover)}
                 </T>
               </View>
             </Row>
             <Divider />
-            {rest.checks.length === 0 && <T variant="muted">No more paychecks this month.</T>}
-            {rest.checks.map((x) => (
+            {next.deposits.map((x) => (
               <Pressable
                 key={x.key}
                 accessibilityRole="button"
-                accessibilityLabel={`${x.name}, ${shortDate(x.date)}, ${money(x.amount)}. Edit amount`}
+                accessibilityLabel={`${x.name}, ${money(x.amount)}. Edit amount`}
                 onPress={() =>
                   router.push(
                     x.expected
@@ -323,7 +294,7 @@ export default function Overview() {
                 <Row style={{ justifyContent: 'space-between' }}>
                   <Row style={{ gap: Spacing.xs, flexShrink: 1 }}>
                     <T numberOfLines={1} style={{ flexShrink: 1 }}>
-                      {x.name} <T variant="small">· {shortDate(x.date)}</T>
+                      {x.name}
                     </T>
                     {x.expected?.gross != null && <Badge text="commission" tone="primary" />}
                     {x.expected && x.expected.gross == null && x.sourceId && <Badge text="edited" />}
@@ -334,21 +305,27 @@ export default function Overview() {
                 </Row>
               </Pressable>
             ))}
+            {next.check.bills.length === 0 && <T variant="muted">No fixed bills from this check.</T>}
+            {next.check.bills.map((b) => {
+              const share = b.split ? shareLabel(b.amount / b.fullAmount) : null;
+              return (
+                <Row key={b.id} style={{ justifyContent: 'space-between', gap: Spacing.sm }}>
+                  <View style={{ flexShrink: 1 }}>
+                    <T numberOfLines={1}>{b.name}</T>
+                    <T variant="small">
+                      {b.split ? `${share ? `${share} of` : `${money(b.amount)} of`} ${money(b.fullAmount)} · ` : ''}due{' '}
+                      {shortDate(b.date)}
+                    </T>
+                  </View>
+                  <T variant="money">−{money(b.amount)}</T>
+                </Row>
+              );
+            })}
             <Button
               title="＋ Add commission or other income"
               kind="secondary"
-              onPress={() => router.push({ pathname: '/payday', params: { date: today() } })}
+              onPress={() => router.push({ pathname: '/payday', params: { date: next.check.date } })}
             />
-            {rest.bills.length === 0 && <T variant="muted">No more bills due this month.</T>}
-            {rest.bills.map((x) => (
-              <Row key={x.id} style={{ justifyContent: 'space-between', gap: Spacing.sm }}>
-                <View style={{ flexShrink: 1 }}>
-                  <T numberOfLines={1}>{x.name}</T>
-                  <T variant="small">{x.note}</T>
-                </View>
-                <T variant="money">−{money(x.amount)}</T>
-              </Row>
-            ))}
           </>
         )}
       </Card>
