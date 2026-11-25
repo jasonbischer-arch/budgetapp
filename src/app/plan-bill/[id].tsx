@@ -29,6 +29,7 @@ const parseNum = (s: string) => {
 const FREQ: Record<string, string> = {
   weekly: 'every week',
   biweekly: 'every 2 weeks',
+  fourweekly: 'every 4 weeks',
   semimonthly: 'twice a month',
   monthly: 'monthly',
 };

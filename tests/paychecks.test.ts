@@ -63,20 +63,28 @@ const eom: Deposit[] = ["2026-06-30", "2026-07-31", "2026-08-31", "2026-09-30", 
 const ca = detectPaychecks(eom, today)[0];
 assert(ca.frequency === "semimonthly" && ca.day1 === 15 && ca.day2 === 31, "15th and last day of the month: " + JSON.stringify([ca.day1, ca.day2]));
 
-// --- Same payer, same day = one paycheck (base pay + commission deposits) ----
+// --- Base pay + a car allowance every 4 weeks, same payer, same Fridays ------
+// (the real deposit pattern: the allowance used to be read as "monthly on the
+// 30th", which put a check on a Wednesday)
 {
   const { detectPaychecks: detect } = await import("../supabase/functions/_shared/paychecks.ts");
-  const fridays = ["2026-07-10","2026-07-24","2026-08-07","2026-08-21","2026-09-04","2026-09-18","2026-10-02","2026-10-16","2026-10-30","2026-11-13"];
-  const extra: Record<string, number> = { "2026-07-24": 1251.06, "2026-08-21": 1159.33, "2026-09-04": 1997.26, "2026-09-18": 1168.58, "2026-10-02": 1337.84, "2026-10-30": 1050.94 };
-  const deposits = fridays.flatMap((d) => [
-    { date: d, amount: 2843.37, description: "BLUELINX CORPORA PAYROLL", merchant: null },
-    ...(extra[d] ? [{ date: d, amount: extra[d], description: "BLUELINX CORPORA PAYROLL", merchant: null }] : []),
-  ]);
-  const found = detect(deposits, "2026-11-25");
-  if (found.length !== 1) throw new Error("FAIL: one paycheck, not a separate 'monthly' one: " + JSON.stringify(found.map((f) => [f.name, f.frequency, f.day1])));
-  const p = found[0];
-  if (p.frequency !== "biweekly" || p.anchor_date !== "2026-11-13") throw new Error("FAIL: every other Friday from Nov 13: " + p.frequency + " " + p.anchor_date);
-  if (Math.abs(p.low - 2843.37) > 0.01) throw new Error("FAIL: budgets with the dependable base pay: " + p.low);
-  if (!(p.average > p.low)) throw new Error("FAIL: average still reflects commission");
-  console.log("ok - two same-day deposits from one payer = one biweekly Friday paycheck; budget amount = base pay");
+  const { paydays: pd } = await import("../src/lib/schedule.ts");
+  const rows: [string, number][] = [
+    ["2026-05-01", 1065.77], ["2026-05-01", 2826.7], ["2026-05-15", 2886.96], ["2026-05-15", 686.65],
+    ["2026-05-29", 2188.02], ["2026-05-29", 2843.36], ["2026-06-12", 2843.38], ["2026-06-26", 1393.83],
+    ["2026-06-26", 2893.37], ["2026-06-26", 1465.27], ["2026-07-10", 2843.38], ["2026-07-24", 1251.06],
+    ["2026-07-24", 1470.77], ["2026-07-24", 2893.36], ["2026-08-07", 2843.36], ["2026-08-21", 2893.38],
+    ["2026-08-21", 1159.33], ["2026-09-04", 2843.36], ["2026-09-04", 1997.26], ["2026-09-18", 1168.58],
+    ["2026-09-18", 2893.38], ["2026-10-02", 1337.84], ["2026-10-02", 2843.37], ["2026-10-16", 3871.74],
+    ["2026-10-30", 2843.37], ["2026-10-30", 1050.94], ["2026-11-13", 2843.37],
+  ];
+  const found = detect(rows.map(([date, amount]) => ({ date, amount, description: "BLUELINX CORPORA PAYROLL", merchant: null })), "2026-11-25");
+  console.log("  found:", found.map((f) => [f.name, f.frequency, f.anchor_date ?? f.day1, f.average].join(" ")).join(" | "));
+  const base = found.find((f) => f.key.endsWith("#1"));
+  const allowance = found.find((f) => f.key.endsWith("#2"));
+  assert(base && base.frequency === "biweekly" && base.anchor_date === "2026-11-13", "base pay: every other Friday");
+  assert(allowance && allowance.frequency === "fourweekly", "the ~1,100 check is still found, every 4 weeks (not monthly on the 30th)");
+  const baseDays = new Set(pd({ id: "b", name: "b", amount: 1, ...base!, day1: null, day2: null }, "2026-11-25", "2027-02-28").map((x) => x.date));
+  const allowDays = pd({ id: "a", name: "a", amount: 1, ...allowance!, day1: null, day2: null }, "2026-11-25", "2027-02-28").map((x) => x.date);
+  assert(allowDays.length >= 3 && allowDays.every((d) => baseDays.has(d)), "it always lands on a base-pay Friday (so the plan combines them): " + allowDays.join(", "));
 }

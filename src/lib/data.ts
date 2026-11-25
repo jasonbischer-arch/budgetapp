@@ -96,7 +96,7 @@ export async function countCategoryTransactions(id: string): Promise<number> {
   return count ?? 0;
 }
 
-export type Frequency = 'weekly' | 'biweekly' | 'semimonthly' | 'monthly';
+export type Frequency = 'weekly' | 'biweekly' | 'fourweekly' | 'semimonthly' | 'monthly';
 
 export type WeekendShift = 'none' | 'before' | 'after';
 

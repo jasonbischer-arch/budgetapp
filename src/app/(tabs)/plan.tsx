@@ -865,6 +865,8 @@ function scheduleLabel(s: Pick<IncomeSource, 'frequency' | 'day1' | 'day2' | 'an
       return s.anchor_date ? `Every ${weekday(s.anchor_date)}` : 'Every week';
     case 'biweekly':
       return s.anchor_date ? `Every other ${weekday(s.anchor_date)}` : 'Every 2 weeks';
+    case 'fourweekly':
+      return s.anchor_date ? `Every 4th ${weekday(s.anchor_date)}` : 'Every 4 weeks';
     case 'semimonthly':
       return `The ${ordinal(s.day1 ?? 1)} and ${s.day2 === 31 ? 'last day' : ordinal(s.day2 ?? 15)}`;
     default:

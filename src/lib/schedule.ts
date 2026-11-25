@@ -71,7 +71,7 @@ export interface PaySchedule {
   id: string;
   name: string;
   amount: number;
-  frequency: 'weekly' | 'biweekly' | 'semimonthly' | 'monthly';
+  frequency: 'weekly' | 'biweekly' | 'fourweekly' | 'semimonthly' | 'monthly';
   anchor_date: ISODate | null;
   day1: number | null;
   day2: number | null;
@@ -124,8 +124,8 @@ export function mergeSameDay(checks: Occurrence[]): Occurrence[] {
 /** Paydays for a schedule within [from, to]. */
 export function paydays(src: PaySchedule, from: ISODate, to: ISODate): Occurrence[] {
   const dates: ISODate[] = [];
-  if ((src.frequency === 'weekly' || src.frequency === 'biweekly') && src.anchor_date) {
-    const step = src.frequency === 'weekly' ? 7 : 14;
+  if ((src.frequency === 'weekly' || src.frequency === 'biweekly' || src.frequency === 'fourweekly') && src.anchor_date) {
+    const step = src.frequency === 'weekly' ? 7 : src.frequency === 'biweekly' ? 14 : 28;
     const k = Math.ceil(daysBetween(src.anchor_date, from) / step);
     for (let d = addDays(src.anchor_date, k * step); d <= to; d = addDays(d, step)) dates.push(d);
   } else {
@@ -181,6 +181,8 @@ export function monthlyAmount(
       return (amount * 52) / 12;
     case 'biweekly':
       return (amount * 26) / 12;
+    case 'fourweekly':
+      return (amount * 13) / 12;
     case 'semimonthly':
       return amount * 2;
     case 'quarterly':

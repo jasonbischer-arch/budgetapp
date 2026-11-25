@@ -19,6 +19,7 @@ import { addDays, paydays, today } from '@/lib/schedule';
 const FREQUENCIES: { value: Frequency; label: string }[] = [
   { value: 'weekly', label: 'Weekly' },
   { value: 'biweekly', label: 'Biweekly' },
+  { value: 'fourweekly', label: '4 weeks' },
   { value: 'semimonthly', label: '2× month' },
   { value: 'monthly', label: 'Monthly' },
 ];
@@ -77,7 +78,7 @@ export default function IncomeEditor() {
   }, [id, isNew]);
 
   const anchorISO = normalizeDate(anchor);
-  const needsAnchor = frequency === 'weekly' || frequency === 'biweekly';
+  const needsAnchor = frequency === 'weekly' || frequency === 'biweekly' || frequency === 'fourweekly';
   const draft = {
     name: name.trim(),
     amount: Number(amount.replace(/[^0-9.]/g, '')),

@@ -370,17 +370,7 @@ export async function detectPaychecksForHousehold(admin: SupabaseClient, househo
   let added = 0;
   let updated = 0;
   for (const p of found) {
-    let match = (existing ?? []).find((e) => e.detection_key === p.key);
-    // It used to be split ("#1", "#2") and you edited one: that one becomes
-    // this paycheck, keeping your changes, instead of adding a duplicate.
-    const adopt = !match && !/#\d+$/.test(p.key)
-      ? (existing ?? []).find((e) => !e.auto && !e.dismissed && (e.detection_key ?? "").replace(/#\d+$/, "") === p.key)
-      : undefined;
-    if (adopt) {
-      await admin.from("income_sources").update({ detection_key: p.key }).eq("id", adopt.id);
-      adopt.detection_key = p.key;
-      match = adopt;
-    }
+    const match = (existing ?? []).find((e) => e.detection_key === p.key);
     const stats = {
       average_amount: p.average,
       last_amount: p.last_amount,
@@ -389,9 +379,7 @@ export async function detectPaychecksForHousehold(admin: SupabaseClient, househo
       detected_at: now,
     };
     const schedule = {
-      // Budget with the dependable part of the check (pay that varies with
-      // commission uses its low end; your commission estimate covers the rest).
-      amount: p.low,
+      amount: p.average,
       frequency: p.frequency,
       anchor_date: p.anchor_date,
       day1: p.day1,
@@ -418,16 +406,6 @@ export async function detectPaychecksForHousehold(admin: SupabaseClient, househo
       if (e) console.error("updating detected paycheck failed:", e.message);
       else updated++;
     }
-  }
-  // An employer that used to show as two paychecks (e.g. "#1" base pay and
-  // "#2" commission) is now one: retire the old automatic split ones.
-  const foundKeys = new Set(found.map((p) => p.key));
-  const retire = (existing ?? []).filter(
-    (e) => e.auto && !e.dismissed && /#\d+$/.test(e.detection_key ?? "") &&
-      foundKeys.has((e.detection_key ?? "").replace(/#\d+$/, "")),
-  );
-  if (retire.length) {
-    await admin.from("income_sources").update({ dismissed: true }).in("id", retire.map((e) => e.id));
   }
   return { found: found.length, added, updated };
 }
