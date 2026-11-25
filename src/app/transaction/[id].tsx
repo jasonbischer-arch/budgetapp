@@ -155,6 +155,22 @@ export default function TransactionDetail() {
       </Card>
 
       <Card>
+        <T style={{ fontWeight: '600' }}>All {place} transactions</T>
+        {placeExcluded ? (
+          <>
+            <T variant="small">🚫 Every {place} transaction is left out of your budget, including new ones.</T>
+            <Button title={`Count ${place} in the budget again`} kind="secondary" onPress={includePlace} loading={placeBusy} />
+          </>
+        ) : (
+          <>
+            <T variant="small">Never want {place} in your budget? Leave out every one of them, now and in the future.</T>
+            <Button title={`🚫 Leave out all ${place}`} kind="secondary" onPress={excludePlace} loading={placeBusy} />
+          </>
+        )}
+        {placeNote && <T variant="small" color={c.positive}>{placeNote}</T>}
+      </Card>
+
+      <Card>
         <Row style={{ justifyContent: 'space-between' }}>
           <T variant="heading">Category</T>
           <Pressable accessibilityRole="button" onPress={() => router.push('/categories')}>
@@ -214,21 +230,6 @@ export default function TransactionDetail() {
         <Input placeholder="Notes" value={notes} onChangeText={setNotes} multiline />
       </Card>
 
-      <Card>
-        <T style={{ fontWeight: '600' }}>All {place} transactions</T>
-        {placeExcluded ? (
-          <>
-            <T variant="small">🚫 Every {place} transaction is left out of your budget, including new ones.</T>
-            <Button title={`Count ${place} in the budget again`} kind="secondary" onPress={includePlace} loading={placeBusy} />
-          </>
-        ) : (
-          <>
-            <T variant="small">Never want {place} in your budget? Leave out every one of them, now and in the future.</T>
-            <Button title={`🚫 Leave out all ${place}`} kind="secondary" onPress={excludePlace} loading={placeBusy} />
-          </>
-        )}
-        {placeNote && <T variant="small" color={c.positive}>{placeNote}</T>}
-      </Card>
 
       <ErrorText message={error} />
       <Button title="Save" onPress={save} loading={saving} />
