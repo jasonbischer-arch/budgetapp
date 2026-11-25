@@ -22,7 +22,17 @@ import {
 import { BillLike, expenseBreakdown, monthStart, trailingMonths } from './insights';
 import { currentBalance, payoff } from './debt';
 import { budgetCommission } from './taxes';
-import { addDays, BillSchedule, endOfMonth, IncomeEdit, monthlyAmount, paydays, PaySchedule, today } from './schedule';
+import {
+  addDays,
+  BillSchedule,
+  buildPaycheckPlan,
+  endOfMonth,
+  IncomeEdit,
+  monthlyAmount,
+  paydays,
+  PaySchedule,
+  today,
+} from './schedule';
 
 export interface HouseholdData {
   accounts: Account[];
@@ -234,4 +244,48 @@ export function monthlyCashFlow(
   const income = paychecks + commission.net;
   const expenses = split.fixed.total + split.variable.total;
   return { paychecks, commission, income, split, expenses, net: income - expenses };
+}
+
+// ---------------------------------------------------------------------------
+// Paycheck plan (Plan tab and the Overview's "Rest of this month")
+// ---------------------------------------------------------------------------
+
+/** Inputs every plan shares: your paychecks, fixed bills and entered commission. */
+export function planInputs(data: HouseholdData) {
+  const from = today();
+  const to = endOfMonth(addDays(endOfMonth(from), 1)); // through end of next month
+  // Only your fixed expenses: the same bills as the Fixed list (credit card
+  // payments aren't included; the card's purchases are spending).
+  const fixedIds = new Set(
+    expenseBills(data.bills, data.accounts, data.liabilities)
+      .filter((b) => b.expense_type === 'fixed')
+      .map((b) => b.id),
+  );
+  const fixed = data.bills.filter((b) => fixedIds.has(b.id));
+  return {
+    from,
+    to,
+    fixed,
+    schedules: fixed.map((b) => toBillSchedule(b, data.liabilities)),
+    // Commission and other amounts you entered for upcoming paydays.
+    edits: incomeEdits(data.expected),
+  };
+}
+
+/** Your paycheck plan: automatic (even), or My plan (only the bills you placed). */
+export function householdPlan(data: HouseholdData, mode: 'even' | 'mine') {
+  const { from, to, fixed, schedules, edits } = planInputs(data);
+  const rules =
+    mode === 'mine'
+      ? data.planRules.map((r) => ({
+          id: r.id,
+          billId: r.bill_id,
+          sourceId: r.income_source_id,
+          amount: r.amount,
+          slot: r.check_slot,
+          fraction: r.fraction,
+        }))
+      : [];
+  const plan = buildPaycheckPlan(data.incomes, schedules, from, to, edits, rules, { onlyRules: mode === 'mine' });
+  return { plan, fixed };
 }

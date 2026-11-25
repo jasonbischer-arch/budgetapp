@@ -60,3 +60,9 @@ export function duration(months: number) {
   if (m || !y) parts.push(`${m} mo${m === 1 ? '' : 's'}`);
   return parts.join(' ');
 }
+
+/** "¼", "½", "¾" for a share of a bill, or null if it isn't a simple one. */
+export function shareLabel(f: number): string | null {
+  const known: [number, string][] = [[0.25, '¼'], [0.5, '½'], [0.75, '¾']];
+  return known.find(([x]) => Math.abs(f - x) < 0.005)?.[1] ?? null;
+}

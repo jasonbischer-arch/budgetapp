@@ -20,9 +20,10 @@ import {
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/lib/auth';
-import { money, moneyWhole, shortDate } from '@/lib/format';
+import { money, moneyWhole, shareLabel, shortDate, weekday } from '@/lib/format';
 import {
   balances,
+  householdPlan,
   incomingChecks,
   monthlyCashFlow,
   toBillSchedule,
@@ -67,20 +68,48 @@ export default function Overview() {
   const { commission, split } = cf;
   const expectedIncome = cf.income;
 
-  // Rest of this month: paychecks still coming, bills still due.
+  // Rest of this month: paychecks still coming, and what your plan pays from
+  // them (e.g. 1/4 of daycare from each check, even when it's due next month).
+  const planMode = household?.plan_mode ?? 'even';
   const rest = useMemo(() => {
     const from = today();
     const to = endOfMonth(from);
     const checks = incomingChecks(data.incomes, data.expected, from, to);
-    const bills = data.bills
-      .map((b) => toBillSchedule(b, data.liabilities))
-      .flatMap((b) => dueDates(b, from, to))
-      .filter((b) => b.amount > 0)
-      .sort((a, b) => a.date.localeCompare(b.date));
-    const incoming = checks.reduce((s, x) => s + x.amount, 0);
-    const outgoing = bills.reduce((s, x) => s + x.amount, 0);
+    const { plan, fixed } = householdPlan(data, planMode);
+    type Out = { id: string; name: string; date: string; due: string; amount: number; note: string };
+    const out: Out[] = [];
+    // Fixed bills: the pieces your plan takes from this month's checks.
+    for (const check of plan.checks.filter((x) => x.date <= to)) {
+      for (const b of check.bills) {
+        const share = b.split ? shareLabel(b.amount / b.fullAmount) : null;
+        out.push({
+          id: `${check.id}:${b.id}`,
+          name: share ? `${b.name} (${share})` : b.name,
+          date: check.date,
+          due: b.date,
+          amount: b.amount,
+          note: `from ${weekday(check.date).slice(0, 3)} ${shortDate(check.date)} check${b.date !== check.date ? ` · due ${shortDate(b.date)}` : ''}`,
+        });
+      }
+    }
+    // Due before any paycheck can cover them, or not on a check in your plan yet.
+    for (const b of [...plan.fromCash, ...plan.unplanned].filter((x) => x.date <= to)) {
+      out.push({ id: `x:${b.id}`, name: b.name, date: b.date, due: b.date, amount: b.amount, note: `due ${shortDate(b.date)} · not on a check` });
+    }
+    // Other bills (variable bills, card payments) still due this month.
+    const fixedIds = new Set(fixed.map((b) => b.id));
+    for (const b of data.bills
+      .filter((x) => !fixedIds.has(x.id))
+      .map((x) => toBillSchedule(x, data.liabilities))
+      .flatMap((x) => dueDates(x, from, to))
+      .filter((x) => x.amount > 0)) {
+      out.push({ id: b.id, name: b.name, date: b.date, due: b.date, amount: b.amount, note: `due ${shortDate(b.date)}` });
+    }
+    const bills = out.sort((x, y) => x.date.localeCompare(y.date) || x.name.localeCompare(y.name));
+    const incoming = checks.reduce((s2, x) => s2 + x.amount, 0);
+    const outgoing = bills.reduce((s2, x) => s2 + x.amount, 0);
     return { checks, bills, incoming, outgoing };
-  }, [data.incomes, data.expected, data.bills, data.liabilities]);
+  }, [data, planMode]);
 
   // Monthly budget check-in: the first week of each month, until you act.
   const cuts = cutSuggestions(data.flows, data.categories, now, data.firstDate);
@@ -312,10 +341,11 @@ export default function Overview() {
             />
             {rest.bills.length === 0 && <T variant="muted">No more bills due this month.</T>}
             {rest.bills.map((x) => (
-              <Row key={x.id} style={{ justifyContent: 'space-between' }}>
-                <T>
-                  {x.name} <T variant="small">· due {shortDate(x.date)}</T>
-                </T>
+              <Row key={x.id} style={{ justifyContent: 'space-between', gap: Spacing.sm }}>
+                <View style={{ flexShrink: 1 }}>
+                  <T numberOfLines={1}>{x.name}</T>
+                  <T variant="small">{x.note}</T>
+                </View>
                 <T variant="money">−{money(x.amount)}</T>
               </Row>
             ))}

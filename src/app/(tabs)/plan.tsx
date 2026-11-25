@@ -42,12 +42,14 @@ import {
   setCategoryBudgets,
   updateCategoryBudget,
 } from '@/lib/data';
-import { money, moneyWhole, monthShort, ordinal, shortDate, weekday } from '@/lib/format';
+import { money, moneyWhole, monthShort, ordinal, shareLabel, shortDate, weekday } from '@/lib/format';
 import {
   debtDetails,
   expenseBills,
   HouseholdData,
+  householdPlan,
   incomeEdits,
+  planInputs,
   toBillSchedule,
   useHouseholdData,
 } from '@/lib/household-data';
@@ -113,46 +115,8 @@ export default function PlanScreen() {
 // Paycheck plan: bills, then the same savings and spending money every check
 // ---------------------------------------------------------------------------
 
-/** Inputs both plans share: your paychecks, fixed bills and entered commission. */
-function planInputs(data: HouseholdData) {
-  const from = today();
-  const to = endOfMonth(addDays(endOfMonth(from), 1)); // through end of next month
-  // Only your fixed expenses: the same bills as the Fixed list (credit card
-  // payments aren't included; the card's purchases are spending).
-  const fixedIds = new Set(
-    expenseBills(data.bills, data.accounts, data.liabilities)
-      .filter((b) => b.expense_type === 'fixed')
-      .map((b) => b.id),
-  );
-  const fixed = data.bills.filter((b) => fixedIds.has(b.id));
-  return {
-    from,
-    to,
-    fixed,
-    schedules: fixed.map((b) => toBillSchedule(b, data.liabilities)),
-    // Commission and other amounts you entered for upcoming paydays.
-    edits: incomeEdits(data.expected),
-  };
-}
-
 function usePlan(data: HouseholdData, mode: 'even' | 'mine') {
-  return useMemo(() => {
-    const { from, to, fixed, schedules, edits } = planInputs(data);
-    const rules =
-      mode === 'mine'
-        ? data.planRules.map((r) => ({
-            id: r.id,
-            billId: r.bill_id,
-            sourceId: r.income_source_id,
-            amount: r.amount,
-            slot: r.check_slot,
-            fraction: r.fraction,
-          }))
-        : [];
-    // My plan: only the bills you put on a check; the rest wait in a list.
-    const plan = buildPaycheckPlan(data.incomes, schedules, from, to, edits, rules, { onlyRules: mode === 'mine' });
-    return { plan, fixed };
-  }, [data, mode]);
+  return useMemo(() => householdPlan(data, mode), [data, mode]);
 }
 
 /** The automatic plan turned into "this bill → this check" choices, to start My plan from. */
@@ -491,12 +455,6 @@ function CheckCard({
       </Row>
     </Card>
   );
-}
-
-/** "1/4", "1/2"... for a share of a bill, or null if it isn't a simple one. */
-function shareLabel(f: number): string | null {
-  const known: [number, string][] = [[0.25, '¼'], [0.5, '½'], [0.75, '¾']];
-  return known.find(([x]) => Math.abs(f - x) < 0.005)?.[1] ?? null;
 }
 
 /** One bill on a check. In My plan: swipe left to take it off. */
