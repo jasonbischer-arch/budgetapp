@@ -19,8 +19,9 @@ import {
   refreshAutoBudgets,
   useQuery,
 } from './data';
-import { BillLike, monthStart } from './insights';
+import { BillLike, expenseBreakdown, monthStart, trailingMonths } from './insights';
 import { currentBalance, payoff } from './debt';
+import { budgetCommission } from './taxes';
 import { addDays, BillSchedule, endOfMonth, IncomeEdit, monthlyAmount, paydays, PaySchedule, today } from './schedule';
 
 export interface HouseholdData {
@@ -201,4 +202,36 @@ export function incomeEdits(expected: ExpectedIncome[]): IncomeEdit[] {
     name: e.name,
     amount: e.amount,
   }));
+}
+
+/**
+ * Money in vs out each month, the same everywhere it's shown:
+ * income = your paychecks (Plan > Income) + slow-month commission after taxes;
+ * expenses = fixed + variable (budgets where set, averages elsewhere).
+ */
+export function monthlyCashFlow(
+  data: HouseholdData,
+  household: {
+    commission_low: number | null;
+    commission_high: number | null;
+    tax_state: string | null;
+    retirement_pct: number;
+  } | null,
+) {
+  const commission = budgetCommission({
+    low: household?.commission_low ?? null,
+    high: household?.commission_high ?? null,
+    state: household?.tax_state ?? null,
+    retirementPct: household?.retirement_pct ?? 0,
+  });
+  const paychecks = data.incomes.reduce((s, x) => s + monthlyAmount(x.frequency, x.amount), 0);
+  const split = expenseBreakdown(
+    data.flows,
+    data.categories,
+    trailingMonths(new Date(), data.firstDate),
+    expenseBills(data.bills, data.accounts, data.liabilities),
+  );
+  const income = paychecks + commission.net;
+  const expenses = split.fixed.total + split.variable.total;
+  return { paychecks, commission, income, split, expenses, net: income - expenses };
 }

@@ -72,3 +72,35 @@ assert(paycheckSplit({ typicalAfterBills: 200, variablePerMonth: 1300, checksPer
   if (budgetHelpDue(cutsX, set, "2026-10-01", dec1)) throw new Error("FAIL: nothing to offer when budgets already match");
   console.log("ok - budget check-in: hidden after taking suggestions, back on the 1st");
 }
+
+// --- Ways to cut ----------------------------------------------------------------
+{
+  const { savingsIdeas } = await import("../src/lib/insights.ts");
+  const cats = [
+    { id: "ent", name: "Entertainment", kind: "expense" as const, expense_type: "variable" as const, provider_categories: ["ENTERTAINMENT"], monthly_budget: null },
+    { id: "ins", name: "Insurance", kind: "expense" as const, expense_type: "fixed" as const, provider_categories: ["GENERAL_SERVICES_INSURANCE"], monthly_budget: null },
+    { id: "loan", name: "Loans", kind: "expense" as const, expense_type: "fixed" as const, provider_categories: ["LOAN_PAYMENTS"], monthly_budget: null },
+    { id: "fees", name: "Bank Fees", kind: "expense" as const, expense_type: "variable" as const, provider_categories: ["BANK_FEES"], monthly_budget: null },
+    { id: "home", name: "Rent & Home", kind: "expense" as const, expense_type: "fixed" as const, provider_categories: ["RENT_AND_UTILITIES_RENT"], monthly_budget: null },
+  ];
+  const ideas = savingsIdeas({
+    cuts: [{ categoryId: "dine", name: "Dining", average: 600, target: 450, savings: 150, reason: "", tip: "Cook more." }],
+    bills: [
+      { id: "netflix", name: "Netflix", monthly: 21.31, category_id: "ent", expense_type: "fixed" },
+      { id: "prog", name: "Progressive", monthly: 276.78, category_id: "ins", expense_type: "fixed" },
+      { id: "ally", name: "Ally", monthly: 425.67, category_id: "loan", expense_type: "fixed" },
+      { id: "mortgage", name: "Mortgage", monthly: 3186, category_id: "home", expense_type: "fixed" },
+    ],
+    categories: cats,
+    debts: [{ billId: "ally", name: "Ally", balance: 14765, apr: 9.79 }, { billId: "gmc", name: "GMC", balance: 42350, apr: 6.24 }],
+    categoryAverages: new Map([["fees", 35]]),
+  });
+  const ids = ideas.map((i) => i.id);
+  assert(ids[0] === "budget:dine", "biggest saving first: " + ids.join(", "));
+  assert(ids.includes("subscription:netflix") && ids.includes("insurance:prog") && ids.includes("fees:fees"), "subscriptions, insurance and fees found");
+  assert(ids.includes("debt:ally") && !ids.includes("debt:gmc"), "only high-interest debt (9.79%, not 6.24%)");
+  assert(!ids.some((i) => i.includes("mortgage")), "a mortgage isn't treated as a subscription");
+  const ally = ideas.find((i) => i.id === "debt:ally")!;
+  assert(Math.abs(ally.monthly - (14765 * (9.79 - 6)) / 1200) < 0.01 && ally.estimate, "refinance saving estimated from the rate difference");
+  assert(Math.abs(ideas.find((i) => i.id === "insurance:prog")!.monthly - 27.678) < 0.01, "insurance re-quote ~10%");
+}

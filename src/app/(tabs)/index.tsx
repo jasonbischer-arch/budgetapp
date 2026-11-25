@@ -23,8 +23,8 @@ import { useAuth } from '@/lib/auth';
 import { money, moneyWhole, shortDate } from '@/lib/format';
 import {
   balances,
-  expenseBills,
   incomingChecks,
+  monthlyCashFlow,
   toBillSchedule,
   useHouseholdData,
 } from '@/lib/household-data';
@@ -32,15 +32,12 @@ import { categoryEmoji } from '@/lib/visuals';
 import {
   budgetHelpDue,
   cutSuggestions,
-  expenseBreakdown,
   periodMonths,
   spendingByCategory,
   totalsFor,
   trailingAverages,
-  trailingMonths,
 } from '@/lib/insights';
-import { dueDates, endOfMonth, monthlyAmount, today } from '@/lib/schedule';
-import { budgetCommission } from '@/lib/taxes';
+import { dueDates, endOfMonth, today } from '@/lib/schedule';
 
 type Period = '1' | '3' | '6' | '12';
 const PERIODS: { value: Period; label: string }[] = [
@@ -64,22 +61,11 @@ export default function Overview() {
   const now = useMemo(() => new Date(), []);
   const { cash, cards, cardAccounts } = balances(data.accounts);
   const avg = trailingAverages(data.flows, now, data.firstDate);
-  // Income you can count on: your paychecks (Plan > Income) plus commission
-  // at its slow-month estimate, after taxes.
-  const commission = budgetCommission({
-    low: household?.commission_low ?? null,
-    high: household?.commission_high ?? null,
-    state: household?.tax_state ?? null,
-    retirementPct: household?.retirement_pct ?? 0,
-  });
-  const expectedIncome =
-    data.incomes.reduce((s, x) => s + monthlyAmount(x.frequency, x.amount), 0) + commission.net;
-  const split = expenseBreakdown(
-    data.flows,
-    data.categories,
-    trailingMonths(now, data.firstDate),
-    expenseBills(data.bills, data.accounts, data.liabilities),
-  );
+  // Income you can count on (paychecks + slow-month commission) vs your fixed
+  // and variable expenses: what's left each month.
+  const cf = monthlyCashFlow(data, household);
+  const { commission, split } = cf;
+  const expectedIncome = cf.income;
 
   // Rest of this month: paychecks still coming, bills still due.
   const rest = useMemo(() => {
@@ -208,7 +194,7 @@ export default function Overview() {
           sub={commission.net ? `incl. ${moneyWhole(commission.net)} commission (slow month)` : 'from your paychecks'}
           onPress={() => router.push({ pathname: '/plan', params: { section: 'income' } })}
         />
-        <Stat label="Expenses" icon="🧾" accent="#EB6834" value={moneyWhole(avg.spent)} sub="monthly average" />
+        <Stat label="Expenses" icon="🧾" accent="#EB6834" value={moneyWhole(cf.expenses)} sub="fixed + variable" />
       </Row>
       {avg.months > 0 && (
         <Row style={{ gap: Spacing.md, alignItems: 'stretch' }}>
@@ -230,13 +216,25 @@ export default function Overview() {
           />
         </Row>
       )}
-      <T variant="small" style={{ marginTop: -Spacing.sm }}>
-        {avg.months
-          ? avg.months >= 12
-            ? 'Income: what your paychecks and commission estimate bring in. Expenses: the last 12 complete months.'
-            : `Income: what your paychecks and commission estimate bring in. Expenses: ${avg.months} complete month${avg.months === 1 ? '' : 's'} of bank history so far.`
-          : 'Averages appear after your first complete month of history.'}
-      </T>
+      <Card style={{ borderColor: cf.net >= 0 ? c.positive : c.negative }}>
+        <Row style={{ justifyContent: 'space-between' }}>
+          <View>
+            <T variant="small">💵 Cash flow (left each month)</T>
+            <T variant="money" color={cf.net >= 0 ? c.positive : c.negative} style={{ fontSize: 26, fontWeight: '800' }}>
+              {cf.net >= 0 ? '+' : '−'}
+              {moneyWhole(Math.abs(cf.net))}
+            </T>
+          </View>
+          <T variant="small" style={{ textAlign: 'right' }}>
+            {moneyWhole(cf.net * 12)}
+            {'\n'}a year
+          </T>
+        </Row>
+        <T variant="small">
+          Expected income − fixed and variable expenses (your budgets where set, averages elsewhere).
+        </T>
+        <Button title="💡 Find ways to cut" onPress={() => router.push('/savings')} />
+      </Card>
 
       {/* Rest of this month */}
       <SectionHeader title={`Rest of ${monthName}`} action={noPlan ? undefined : 'Plan'} onAction={() => router.push('/plan')} />

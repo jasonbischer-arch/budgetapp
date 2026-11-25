@@ -457,3 +457,131 @@ export function budgetHelpDue(
   if (doneMonth && doneMonth >= monthStart(now)) return false;
   return cuts.some((x) => budgets.get(x.categoryId) !== x.target);
 }
+
+// ---------------------------------------------------------------------------
+// Ways to cut: ideas that raise monthly cash flow
+// ---------------------------------------------------------------------------
+
+export type SavingsIdeaKind = 'budget' | 'subscription' | 'insurance' | 'debt' | 'fees';
+
+export interface SavingsIdea {
+  id: string;
+  kind: SavingsIdeaKind;
+  title: string;
+  detail: string;
+  /** Estimated extra cash per month if you do it. */
+  monthly: number;
+  /** true when the saving is an estimate (e.g. a cheaper insurance quote). */
+  estimate: boolean;
+  /** What to open or change: a category (budget) or a bill. */
+  categoryId?: string;
+  target?: number;
+  billId?: string;
+}
+
+const usd = (n: number) => '$' + Math.round(n).toLocaleString('en-US');
+
+/** Bills that are usually optional monthly subscriptions. */
+const SUBSCRIPTION_CODES = ['GENERAL_SERVICES', 'ENTERTAINMENT', 'PERSONAL_CARE', 'GENERAL_MERCHANDISE'];
+const SUBSCRIPTION_MAX = 100; // a $3,000 mortgage isn't a subscription
+const INSURANCE_CODES = ['GENERAL_SERVICES_INSURANCE'];
+/** Shopping around typically saves on insurance; used as an estimate. */
+const INSURANCE_SAVING = 0.1;
+/** A debt costing more than this APR is worth paying down or refinancing. */
+const HIGH_APR = 7;
+/** The rate a refinance might get, for the estimate. */
+const REFI_APR = 6;
+
+/**
+ * Ideas to raise cash flow, biggest first:
+ *  - variable categories you could spend less on (from your own history),
+ *  - subscriptions you could cancel,
+ *  - insurance worth re-quoting (estimated 10%),
+ *  - high-interest debts (interest saved by refinancing to ~6%),
+ *  - bank fees you could avoid.
+ */
+export function savingsIdeas(opts: {
+  cuts: CutSuggestion[];
+  bills: { id: string; name: string; monthly: number; category_id: string | null; expense_type: 'fixed' | 'variable' }[];
+  categories: CategoryLike[];
+  debts: { billId: string; name: string; balance: number | null; apr: number | null }[];
+  /** Average monthly spending per category (bill payments left out). */
+  categoryAverages: Map<string | null, number>;
+}): SavingsIdea[] {
+  const ideas: SavingsIdea[] = [];
+  const catOf = (id: string | null) => (id ? opts.categories.find((c) => c.id === id) : undefined);
+  const has = (id: string | null, codes: string[]) =>
+    !!catOf(id)?.provider_categories.some((p) => codes.some((code) => p === code || p.startsWith(code + '_')));
+
+  for (const x of opts.cuts) {
+    ideas.push({
+      id: `budget:${x.categoryId}`,
+      kind: 'budget',
+      title: `Spend ${Math.round((x.savings / x.average) * 100)}% less on ${x.name}`,
+      detail: `${x.tip} Budget ${usd(x.target)} instead of your usual ${usd(x.average)}.`,
+      monthly: x.savings,
+      estimate: false,
+      categoryId: x.categoryId,
+      target: x.target,
+    });
+  }
+
+  const debtIds = new Set(opts.debts.map((d) => d.billId));
+  for (const b of opts.bills) {
+    if (debtIds.has(b.id) || b.monthly <= 0) continue;
+    if (has(b.category_id, INSURANCE_CODES)) {
+      ideas.push({
+        id: `insurance:${b.id}`,
+        kind: 'insurance',
+        title: `Shop around for ${b.name}`,
+        detail: 'Get 2–3 quotes at renewal, raise deductibles if you have savings, and bundle home and auto.',
+        monthly: b.monthly * INSURANCE_SAVING,
+        estimate: true,
+        billId: b.id,
+      });
+    } else if (b.monthly <= SUBSCRIPTION_MAX && has(b.category_id, SUBSCRIPTION_CODES)) {
+      ideas.push({
+        id: `subscription:${b.id}`,
+        kind: 'subscription',
+        title: `Cancel or pause ${b.name}`,
+        detail: 'Rotate services month to month, or switch to a cheaper plan.',
+        monthly: b.monthly,
+        estimate: false,
+        billId: b.id,
+      });
+    }
+  }
+
+  for (const d of opts.debts) {
+    if (d.balance == null || d.apr == null || d.apr <= HIGH_APR || d.balance <= 0) continue;
+    const interest = (d.balance * d.apr) / 1200;
+    const saved = (d.balance * (d.apr - REFI_APR)) / 1200;
+    ideas.push({
+      id: `debt:${d.billId}`,
+      kind: 'debt',
+      title: `Refinance or pay down ${d.name} (${d.apr}%)`,
+      detail: `It costs about ${usd(interest)} a month in interest. At ~${REFI_APR}% that would drop by the amount shown; extra payments shrink it too.`,
+      monthly: saved,
+      estimate: true,
+      billId: d.billId,
+    });
+  }
+
+  for (const c of opts.categories) {
+    if (!c.provider_categories.includes('BANK_FEES')) continue;
+    const fees = opts.categoryAverages.get(c.id) ?? 0;
+    if (fees >= 1) {
+      ideas.push({
+        id: `fees:${c.id}`,
+        kind: 'fees',
+        title: 'Stop paying bank fees',
+        detail: 'Turn on low-balance alerts, use in-network ATMs, and ask your bank to waive fees.',
+        monthly: fees,
+        estimate: false,
+        categoryId: c.id,
+      });
+    }
+  }
+
+  return ideas.filter((i) => i.monthly >= 1).sort((a, b) => b.monthly - a.monthly);
+}
