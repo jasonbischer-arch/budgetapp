@@ -34,6 +34,8 @@ import {
   resetCategoryBudget,
   addPlanRule,
   deletePlanRules,
+  deletePlanSaving,
+  savePlanSaving,
   replacePlanRules,
   savePlanRulesForBill,
   markBudgetHelpDone,
@@ -151,6 +153,7 @@ function PaycheckPlanView({
   const p = usePlan(data, mode);
   const [modeErr, setModeErr] = useState<string | null>(null);
   const [addTo, setAddTo] = useState<PlannedCheck | null>(null);
+  const [saveFrom, setSaveFrom] = useState<PlannedCheck | null>(null);
   // Hidden right away while a change saves, so nothing can be picked twice.
   const [pending, setPending] = useState<Set<string>>(new Set());
   const ruleBills = new Set(data.planRules.map((r) => r.bill_id));
@@ -292,7 +295,7 @@ function PaycheckPlanView({
 
       <GradientCard colors={c.gradPlan}>
         <T color={c.heroMuted} style={styles.summaryLabel}>
-          LEFT ON EACH CHECK AFTER FIXED BILLS
+          {mode === 'mine' ? 'LEFT ON EACH CHECK AFTER BILLS & SAVINGS' : 'LEFT ON EACH CHECK AFTER FIXED BILLS'}
         </T>
         <T color={c.heroText} style={styles.summaryValue}>
           {!lefts.length ? '—' : maxLeft - minLeft < 1 ? moneyWhole(maxLeft) : `${moneyWhole(minLeft)} – ${moneyWhole(maxLeft)}`}
@@ -300,7 +303,7 @@ function PaycheckPlanView({
         <T color={c.heroMuted}>
           {mode === 'even'
             ? `Your fixed bills (${moneyWhole(fixedTotal)}) are divided across your ${p.plan.checks.length} checks so every check keeps the same amount. A bill is split between checks when needed, and always paid from checks that arrive before it's due.`
-            : `You choose which check pays each bill: all of it, half or a quarter. Swipe a bill left to take it off a check, and tap ＋ Add bill to put one on. Each bill stays on that check every month.`}
+            : `You choose which check pays each bill: all of it, half or a quarter. Swipe a bill left to take it off a check, tap ＋ Add bill to put one on, and ＋ Add savings to set aside a flat amount or a % of the check. Each stays on that check every month.`}
         </T>
       </GradientCard>
 
@@ -353,6 +356,8 @@ function PaycheckPlanView({
               hidden={pending}
               onRemove={removePiece}
               onAdd={() => setAddTo(check)}
+              onSavings={() => setSaveFrom(check)}
+              onRemoveSavings={(id) => whilePending([id], () => deletePlanSaving(id))}
             />
           ))}
         </View>
@@ -365,6 +370,27 @@ function PaycheckPlanView({
         onPick={(billId, fraction) => addTo && addBill(addTo, billId, fraction)}
         onClose={() => setAddTo(null)}
       />
+      <SavingsSheet
+        check={saveFrom}
+        onSave={(value) => {
+          const check = saveFrom;
+          if (!check || !household) return;
+          const source = check.sources?.[0] ?? check.refId;
+          setSaveFrom(null);
+          whilePending([], () =>
+            savePlanSaving(household.id, {
+              income_source_id: source,
+              check_slot: check.slots?.[source] ?? null,
+              ...value,
+            }),
+          );
+        }}
+        onRemove={(id) => {
+          setSaveFrom(null);
+          whilePending([id], () => deletePlanSaving(id));
+        }}
+        onClose={() => setSaveFrom(null)}
+      />
     </>
   );
 }
@@ -376,6 +402,8 @@ function CheckCard({
   hidden,
   onRemove,
   onAdd,
+  onSavings,
+  onRemoveSavings,
 }: {
   check: PlannedCheck;
   data: HouseholdData;
@@ -383,6 +411,8 @@ function CheckCard({
   hidden: Set<string>;
   onRemove: (bill: PlannedBill) => void;
   onAdd: () => void;
+  onSavings: () => void;
+  onRemoveSavings: (id: string) => void;
 }) {
   const c = useTheme();
   // Hide a piece you just removed while it saves.
@@ -390,7 +420,9 @@ function CheckCard({
     b.ruleIds?.length ? !b.ruleIds.every((id) => hidden.has(id)) : !hidden.has(b.refId),
   );
   const billsTotal = bills.reduce((s2, b) => s2 + b.amount, 0);
-  const left = Math.round((check.amount - billsTotal) * 100) / 100;
+  const savings = (check.savings ?? []).filter((x) => !hidden.has(x.id));
+  const savingsTotal = savings.reduce((s2, x) => s2 + x.amount, 0);
+  const left = Math.round((check.amount - billsTotal - savingsTotal) * 100) / 100;
   return (
     <Card>
       <Row style={{ justifyContent: 'space-between' }}>
@@ -410,14 +442,17 @@ function CheckCard({
       </Row>
 
       {/* Fixed bills vs what's left */}
-      <View style={styles.split} accessibilityLabel={`Fixed bills ${money(billsTotal)}, left ${money(left)}`}>
+      <View
+        style={styles.split}
+        accessibilityLabel={`Fixed bills ${money(billsTotal)}${savingsTotal ? `, savings ${money(savingsTotal)}` : ''}, left ${money(left)}`}>
         {billsTotal > 0 && <View style={{ flex: billsTotal, backgroundColor: c.textMuted, height: '100%' }} />}
+        {savingsTotal > 0 && <View style={{ flex: savingsTotal, backgroundColor: c.saveColor, height: '100%' }} />}
         {left > 0 && <View style={{ flex: left, backgroundColor: c.accent, height: '100%' }} />}
       </View>
 
       {left < 0 && (
         <T variant="small" color={c.negative} style={{ fontWeight: '600' }}>
-          ⚠️ {money(-left)} short: the bills here are more than this check.
+          ⚠️ {money(-left)} short: the bills{savingsTotal ? ' and savings' : ''} here are more than this check.
           {editable ? ' Swipe one off and add it to another check.' : ''}
         </T>
       )}
@@ -431,29 +466,201 @@ function CheckCard({
         ))}
       </View>
 
+      {savings.map((x) => (
+        <SavingsRow
+          key={x.id}
+          saving={x}
+          editable={editable}
+          onEdit={onSavings}
+          onRemove={() => onRemoveSavings(x.id)}
+        />
+      ))}
+
       {editable && (
-        <Pressable
-          onPress={onAdd}
-          accessibilityRole="button"
-          accessibilityLabel={`Add a bill to the ${shortDate(check.date)} check`}
-          style={({ pressed }) => [
-            styles.addButton,
-            { borderColor: c.primary, backgroundColor: pressed ? c.primarySoft : 'transparent' },
-          ]}>
-          <T color={c.primary} style={{ fontWeight: '700' }}>
-            ＋ Add bill
-          </T>
-        </Pressable>
+        <Row style={{ gap: Spacing.sm }}>
+          <Pressable
+            onPress={onAdd}
+            accessibilityRole="button"
+            accessibilityLabel={`Add a bill to the ${shortDate(check.date)} check`}
+            style={({ pressed }) => [
+              styles.addButton,
+              { flex: 1, borderColor: c.primary, backgroundColor: pressed ? c.primarySoft : 'transparent' },
+            ]}>
+            <T color={c.primary} style={{ fontWeight: '700' }}>
+              ＋ Add bill
+            </T>
+          </Pressable>
+          <Pressable
+            onPress={onSavings}
+            accessibilityRole="button"
+            accessibilityLabel={`${savings.length ? 'Change' : 'Add'} savings from the ${shortDate(check.date)} check`}
+            style={({ pressed }) => [
+              styles.addButton,
+              { flex: 1, borderColor: c.saveColor, backgroundColor: pressed ? c.primarySoft : 'transparent' },
+            ]}>
+            <T color={c.saveColor} style={{ fontWeight: '700' }}>
+              {savings.length ? '✎ Savings' : '＋ Add savings'}
+            </T>
+          </Pressable>
+        </Row>
       )}
 
       <Divider />
       <Row style={{ justifyContent: 'space-between' }}>
-        <T style={{ fontWeight: '700' }}>Left after fixed bills</T>
+        <T style={{ fontWeight: '700' }}>{savingsTotal ? 'Left after bills & savings' : 'Left after fixed bills'}</T>
         <T variant="money" style={{ fontSize: 18 }} color={left < 0 ? c.negative : undefined}>
           {money(left)}
         </T>
       </Row>
     </Card>
+  );
+}
+
+/** What you save from a check. In My plan: tap to change, swipe left to remove. */
+function SavingsRow({
+  saving,
+  editable,
+  onEdit,
+  onRemove,
+}: {
+  saving: { id: string; amount: number; percent: number | null };
+  editable: boolean;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  const c = useTheme();
+  const row = (
+    <Pressable
+      disabled={!editable}
+      onPress={onEdit}
+      accessibilityRole={editable ? 'button' : undefined}
+      accessibilityLabel={`Savings ${money(saving.amount)}${editable ? '. Tap to change' : ''}`}
+      accessibilityActions={editable ? [{ name: 'delete', label: 'Remove savings' }] : undefined}
+      onAccessibilityAction={(e) => e.nativeEvent.actionName === 'delete' && onRemove()}
+      style={({ pressed }) => [styles.billRow, { backgroundColor: pressed ? c.cardAlt : c.card, borderRadius: Radius.md }]}>
+      <IconBubble emoji="💰" color={c.saveColor} size={36} />
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <T numberOfLines={1} style={{ fontWeight: '600' }}>
+          Savings
+        </T>
+        <T variant="small">{saving.percent != null ? `${saving.percent}% of this check` : 'Flat amount'}</T>
+      </View>
+      <T variant="money" color={c.saveColor}>
+        −{money(saving.amount)}
+      </T>
+      {editable && Platform.OS === 'web' && (
+        <Pressable
+          onPress={onRemove}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Remove savings from this check"
+          style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1, paddingHorizontal: 4 })}>
+          <T color={c.textMuted} style={{ fontSize: 16 }}>
+            ✕
+          </T>
+        </Pressable>
+      )}
+    </Pressable>
+  );
+  if (!editable || Platform.OS === 'web') return row;
+  return (
+    <Swipeable
+      friction={1.6}
+      rightThreshold={60}
+      overshootRight={false}
+      onSwipeableOpen={onRemove}
+      renderRightActions={() => (
+        <View style={[styles.removeAction, { backgroundColor: c.negative }]}>
+          <T color="#fff" style={{ fontWeight: '700' }}>
+            🗑 Remove
+          </T>
+        </View>
+      )}>
+      {row}
+    </Swipeable>
+  );
+}
+
+/** Set what you save from a check: a flat amount or a % of the check. */
+function SavingsSheet({
+  check,
+  onSave,
+  onRemove,
+  onClose,
+}: {
+  check: PlannedCheck | null;
+  onSave: (value: { amount: number | null; percent: number | null }) => void;
+  onRemove: (id: string) => void;
+  onClose: () => void;
+}) {
+  const c = useTheme();
+  const insets = useSafeAreaInsets();
+  const current = check?.savings?.[0];
+  const [kind, setKind] = useState<'flat' | 'percent'>('flat');
+  const [value, setValue] = useState('');
+  useEffect(() => {
+    if (!check) return;
+    setKind(current?.percent != null ? 'percent' : 'flat');
+    setValue(current ? String(current.percent ?? current.amount) : '');
+  }, [check, current]);
+
+  const n = Number(value.replace(/[^0-9.]/g, ''));
+  const valid = value.trim() !== '' && n > 0 && (kind === 'flat' ? n < 10000000 : n <= 100);
+  const preview = check && valid ? (kind === 'flat' ? n : Math.round(check.amount * n) / 100) : null;
+
+  return (
+    <Modal visible={!!check} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={styles.sheetBackdrop} onPress={onClose} accessibilityLabel="Close">
+        <Pressable
+          onPress={() => {}}
+          style={[styles.sheet, { backgroundColor: c.card, paddingBottom: Spacing.lg + insets.bottom }]}>
+          <View style={[styles.grabber, { backgroundColor: c.border }]} />
+          <T variant="heading">💰 Savings from this check</T>
+          {check && (
+            <T variant="small">
+              {check.name} · {weekday(check.date)}, {shortDate(check.date)} · {money(check.amount)} (and this check every
+              month)
+            </T>
+          )}
+          <Segmented
+            options={[
+              { value: 'flat', label: '$ Flat amount' },
+              { value: 'percent', label: '% of check' },
+            ]}
+            value={kind}
+            onChange={(k) => {
+              setKind(k);
+              setValue('');
+            }}
+          />
+          <Input
+            value={value}
+            onChangeText={setValue}
+            keyboardType="decimal-pad"
+            placeholder={kind === 'flat' ? 'Amount, e.g. 250' : 'Percent, e.g. 10'}
+            accessibilityLabel={kind === 'flat' ? 'Savings amount in dollars' : 'Savings percent of the check'}
+          />
+          {preview != null && (
+            <T variant="small">
+              Saves {money(preview)} from this check
+              {kind === 'percent' ? ` (${n}% of ${money(check!.amount)})` : ''}.
+            </T>
+          )}
+          {kind === 'percent' && value.trim() !== '' && n > 100 && (
+            <T variant="small" color={c.negative}>
+              Enter 100% or less.
+            </T>
+          )}
+          <Button
+            title="Save"
+            disabled={!valid}
+            onPress={() => onSave(kind === 'flat' ? { amount: n, percent: null } : { amount: null, percent: n })}
+          />
+          {current && <Button title="Remove savings" kind="secondary" onPress={() => onRemove(current.id)} />}
+          <Button title="Cancel" kind="secondary" onPress={onClose} />
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 

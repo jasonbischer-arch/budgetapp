@@ -104,3 +104,16 @@ assert(paycheckSplit({ typicalAfterBills: 200, variablePerMonth: 1300, checksPer
   assert(Math.abs(ally.monthly - (14765 * (9.79 - 6)) / 1200) < 0.01 && ally.estimate, "refinance saving estimated from the rate difference");
   assert(Math.abs(ideas.find((i) => i.id === "insurance:prog")!.monthly - 27.678) < 0.01, "insurance re-quote ~10%");
 }
+
+{
+  const { cashFlowHistory } = await import("../src/lib/insights.ts");
+  const rows = [
+    { month: "2026-09-01", flow: "income", category_id: null, bill_id: null, total: 5000, n: 2 },
+    { month: "2026-09-01", flow: "spending", category_id: null, bill_id: null, total: -4200, n: 30 },
+    { month: "2026-10-01", flow: "income", category_id: null, bill_id: null, total: 5000, n: 2 },
+    { month: "2026-10-01", flow: "spending", category_id: null, bill_id: null, total: -5600, n: 30 },
+    { month: "2026-11-01", flow: "income", category_id: null, bill_id: null, total: 100, n: 1 },
+  ] as never[];
+  const h = cashFlowHistory(rows, new Date("2026-11-26T12:00:00"), "2026-09-01");
+  assert(h.length === 2 && h[0].month === "2026-09-01" && h[0].net === 800 && h[1].net === -600, "cash flow per past month (this month left out): " + JSON.stringify(h.map((x) => x.net)));
+}

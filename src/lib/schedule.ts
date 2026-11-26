@@ -231,10 +231,22 @@ export interface PlanRule {
   fraction?: number | null;
 }
 
+/** What you save from a check (My plan): a flat amount or a % of the check. */
+export interface PlanSaving {
+  id: string;
+  sourceId: string;
+  /** Which of that paycheck's checks in a month (1 = first); null = every one. */
+  slot: number | null;
+  amount: number | null;
+  percent: number | null;
+}
+
 /** Plan options. */
 export interface PlanOptions {
   /** Only place bills you added (your own plan); the rest are listed as not planned. */
   onlyRules?: boolean;
+  /** Savings you set aside from checks (comes out after bills). */
+  savings?: PlanSaving[];
 }
 
 /**
@@ -281,6 +293,10 @@ export interface PlannedCheck extends Occurrence {
   slots?: Record<string, number>;
   bills: PlannedBill[];
   billsTotal: number;
+  /** What you save from this check (My plan). */
+  savings?: { id: string; amount: number; percent: number | null }[];
+  savingsTotal?: number;
+  /** Left after bills (and savings). */
   leftover: number;
 }
 
@@ -542,7 +558,16 @@ export function buildPaycheckPlan(
     }
     c.bills = [...merged.values()].sort((x, y) => x.date.localeCompare(y.date));
     c.billsTotal = cents(c.bills.reduce((s2, b) => s2 + b.amount, 0));
-    c.leftover = cents(c.amount - c.billsTotal);
+    // Savings you set for this check: a flat amount, or a % of the check.
+    c.savings = (opts.savings ?? [])
+      .filter((sv) => hasSource(c, sv.sourceId) && (sv.slot == null || c.slots?.[sv.sourceId] === sv.slot))
+      .map((sv) => ({
+        id: sv.id,
+        percent: sv.percent,
+        amount: cents(sv.amount ?? (c.amount * (sv.percent ?? 0)) / 100),
+      }));
+    c.savingsTotal = cents(c.savings.reduce((s2, x) => s2 + x.amount, 0));
+    c.leftover = cents(c.amount - c.billsTotal - c.savingsTotal);
   }
   const target = checks.length ? checks.reduce((s2, c) => s2 + c.leftover, 0) / checks.length : 0;
   return {

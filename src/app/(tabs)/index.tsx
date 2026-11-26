@@ -29,7 +29,9 @@ import {
   useHouseholdData,
 } from '@/lib/household-data';
 import { categoryEmoji } from '@/lib/visuals';
+import { CashFlowChart } from '@/components/cash-flow-chart';
 import {
+  cashFlowHistory,
   budgetHelpDue,
   cutSuggestions,
   periodMonths,
@@ -63,6 +65,8 @@ export default function Overview() {
   // Income you can count on (paychecks + slow-month commission) vs your fixed
   // and variable expenses: what's left each month.
   const cf = monthlyCashFlow(data, household);
+  // Actual cash flow in past months (before following this budget).
+  const history = cashFlowHistory(data.flows, now, data.firstDate);
   const { commission, split } = cf;
   const expectedIncome = cf.income;
 
@@ -230,8 +234,15 @@ export default function Overview() {
         <T variant="small">
           Expected income − fixed and variable expenses (your budgets where set, averages elsewhere).
         </T>
-        <Button title="💡 Find ways to cut" onPress={() => router.push('/savings')} />
       </Card>
+      {history.length > 0 && (
+        <>
+          <SectionHeader title="Cash flow by month" />
+          <Card>
+            <CashFlowChart months={history} planNet={cf.net} />
+          </Card>
+        </>
+      )}
 
       {/* Next paycheck (matches Plan -> Plan) */}
       <SectionHeader
@@ -261,7 +272,7 @@ export default function Overview() {
               <View style={{ flex: 1 }}>
                 <T variant="small">Outgoing</T>
                 <T variant="money" style={{ fontSize: 20 }}>
-                  {moneyWhole(next.check.billsTotal)}
+                  {moneyWhole(next.check.billsTotal + (next.check.savingsTotal ?? 0))}
                 </T>
               </View>
               <View style={{ flex: 1, alignItems: 'flex-end' }}>
@@ -321,6 +332,17 @@ export default function Overview() {
                 </Row>
               );
             })}
+            {(next.check.savings ?? []).map((x) => (
+              <Row key={x.id} style={{ justifyContent: 'space-between', gap: Spacing.sm }}>
+                <View style={{ flexShrink: 1 }}>
+                  <T numberOfLines={1}>💰 Savings</T>
+                  <T variant="small">{x.percent != null ? `${x.percent}% of this check` : 'Flat amount'}</T>
+                </View>
+                <T variant="money" color={c.saveColor}>
+                  −{money(x.amount)}
+                </T>
+              </Row>
+            ))}
             <Button
               title="＋ Add commission or other income"
               kind="secondary"

@@ -12,7 +12,9 @@ import {
   fetchLiabilities,
   fetchMonthlyFlows,
   fetchPlanRules,
+  fetchPlanSavings,
   PlanRuleRow,
+  PlanSavingRow,
   FlowRow,
   IncomeSource,
   Liability,
@@ -46,6 +48,8 @@ export interface HouseholdData {
   expected: ExpectedIncome[];
   /** Your own paycheck plan (which paycheck pays which bill). */
   planRules: PlanRuleRow[];
+  /** What you save from each check in My plan. */
+  planSavings: PlanSavingRow[];
 }
 
 const EMPTY: HouseholdData = {
@@ -58,6 +62,7 @@ const EMPTY: HouseholdData = {
   liabilities: [],
   expected: [],
   planRules: [],
+  planSavings: [],
 };
 
 /** Everything the Overview and Plan tabs need, reloaded on focus. */
@@ -67,7 +72,7 @@ export function useHouseholdData() {
     // everything else instead of first; categories are only fetched again if
     // a budget actually changed.
     const budgets = refreshAutoBudgets().catch(() => 0);
-    const [accounts, firstCategories, flows, firstDate, incomes, bills, liabilities, expected, planRules] = await Promise.all([
+    const [accounts, firstCategories, flows, firstDate, incomes, bills, liabilities, expected, planRules, planSavings] = await Promise.all([
       fetchAccounts(),
       fetchCategories(),
       fetchMonthlyFlows(monthStart(new Date(), -12)),
@@ -78,9 +83,10 @@ export function useHouseholdData() {
       // Through next month: the paycheck plan looks that far ahead.
       fetchExpectedIncome(today(), endOfMonth(addDays(endOfMonth(today()), 1))),
       fetchPlanRules(),
+      fetchPlanSavings().catch(() => []),
     ]);
     const categories = (await budgets) > 0 ? await fetchCategories() : firstCategories;
-    return { accounts, categories, flows, firstDate, incomes, bills, liabilities, expected, planRules };
+    return { accounts, categories, flows, firstDate, incomes, bills, liabilities, expected, planRules, planSavings };
   }, EMPTY, '', 'household');
 }
 
@@ -286,6 +292,19 @@ export function householdPlan(data: HouseholdData, mode: 'even' | 'mine') {
           fraction: r.fraction,
         }))
       : [];
-  const plan = buildPaycheckPlan(data.incomes, schedules, from, to, edits, rules, { onlyRules: mode === 'mine' });
+  const savings =
+    mode === 'mine'
+      ? data.planSavings.map((sv) => ({
+          id: sv.id,
+          sourceId: sv.income_source_id,
+          slot: sv.check_slot,
+          amount: sv.amount,
+          percent: sv.percent,
+        }))
+      : [];
+  const plan = buildPaycheckPlan(data.incomes, schedules, from, to, edits, rules, {
+    onlyRules: mode === 'mine',
+    savings,
+  });
   return { plan, fixed };
 }

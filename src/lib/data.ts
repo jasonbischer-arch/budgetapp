@@ -601,6 +601,37 @@ export async function savePlanRulesForBill(
   }
 }
 
+/** What you save from a check in My plan: a flat amount or a % of the check. */
+export interface PlanSavingRow {
+  id: string;
+  income_source_id: string;
+  check_slot: number | null;
+  amount: number | null;
+  percent: number | null;
+}
+
+export async function fetchPlanSavings(): Promise<PlanSavingRow[]> {
+  const rows = unwrap(
+    await supabase.from('plan_savings').select('id, income_source_id, check_slot, amount, percent').order('created_at'),
+  ) as PlanSavingRow[];
+  return rows.map((r) => ({ ...r, amount: num(r.amount), percent: num(r.percent) }));
+}
+
+/** Sets the savings for one check (replaces what was there). */
+export async function savePlanSaving(
+  householdId: string,
+  saving: { income_source_id: string; check_slot: number | null; amount: number | null; percent: number | null },
+) {
+  let q = supabase.from('plan_savings').delete().eq('income_source_id', saving.income_source_id);
+  q = saving.check_slot == null ? q.is('check_slot', null) : q.eq('check_slot', saving.check_slot);
+  unwrap(await q);
+  unwrap(await supabase.from('plan_savings').insert({ ...saving, household_id: householdId }));
+}
+
+export async function deletePlanSaving(id: string) {
+  unwrap(await supabase.from('plan_savings').delete().eq('id', id));
+}
+
 /** Starts your plan from a list of bill → check choices (replaces any plan you had). */
 export async function replacePlanRules(
   householdId: string,

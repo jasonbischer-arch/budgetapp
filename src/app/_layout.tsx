@@ -65,7 +65,6 @@ function RootNavigator() {
             name="networth-account/[id]"
             options={{ presentation: 'modal', headerShown: true, title: 'Net worth item' }}
           />
-          <Stack.Screen name="savings" options={{ presentation: 'modal', headerShown: true, title: 'Ways to cut' }} />
           <Stack.Screen name="payday" options={{ presentation: 'modal', headerShown: true, title: 'Incoming' }} />
           <Stack.Screen
             name="categories/index"

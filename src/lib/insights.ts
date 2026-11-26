@@ -585,3 +585,16 @@ export function savingsIdeas(opts: {
 
   return ideas.filter((i) => i.monthly >= 1).sort((a, b) => b.monthly - a.monthly);
 }
+
+/**
+ * Actual cash flow for each complete past month (up to 12, oldest first):
+ * money in minus spending, from your bank history.
+ */
+export function cashFlowHistory(rows: FlowRowLike[], now: Date, firstDate: string | null) {
+  return [...trailingMonths(now, firstDate)]
+    .sort()
+    .map((month) => {
+      const t = totalsFor(rows, new Set([month]));
+      return { month, income: t.income, spent: t.spent, net: t.net };
+    });
+}

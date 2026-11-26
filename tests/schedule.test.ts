@@ -155,3 +155,20 @@ assert(paydays(firsts, "2026-07-25", "2026-07-31").map(p => p.date)[0] === "2026
   const half = build([his, hers], [daycare], "2026-11-25", "2027-01-31", [], [q("his", 1, "r1"), { ...q("his", 2, "r2"), fraction: 0.25 }], { onlyRules: true });
   assert(half.unplanned.length === 1 && Math.abs(half.unplanned[0].amount - 687.5) < 0.01, "only half placed: the other half waits in 'Not on a check yet'");
 }
+
+{
+  // My plan: savings from a check, a flat amount or a % of the check.
+  const { buildPaycheckPlan: build } = await import("../src/lib/schedule.ts");
+  const pay = { id: "p", name: "Pay", amount: 3000, frequency: "biweekly" as const, anchor_date: "2026-11-13", day1: null, day2: null };
+  const rent = [{ id: "rent", name: "Rent", amount: 1000, frequency: "monthly" as const, due_day: 28, due_month: null }];
+  const p = build([pay], rent, "2026-12-01", "2026-12-31", [], [{ billId: "rent", sourceId: "p", amount: null, slot: 2 }], {
+    onlyRules: true,
+    savings: [
+      { id: "s1", sourceId: "p", slot: 1, amount: 250, percent: null },
+      { id: "s2", sourceId: "p", slot: 2, amount: null, percent: 10 },
+    ],
+  });
+  const [first, second] = p.checks;
+  assert(first.savingsTotal === 250 && first.leftover === 2750, "flat $250 saved from the 1st check: 3000 - 250 = 2750");
+  assert(second.savingsTotal === 300 && second.leftover === 1700, "10% saved from the 2nd check after rent: 3000 - 1000 - 300 = 1700");
+}
