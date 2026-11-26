@@ -235,15 +235,6 @@ export default function Overview() {
           Expected income − fixed and variable expenses (your budgets where set, averages elsewhere).
         </T>
       </Card>
-      {history.length > 0 && (
-        <>
-          <SectionHeader title="Cash flow by month" />
-          <Card>
-            <CashFlowChart months={history} planNet={cf.net} />
-          </Card>
-        </>
-      )}
-
       {/* Next paycheck (matches Plan -> Plan) */}
       <SectionHeader
         title={next ? `Next paycheck · ${weekday(next.check.date)}, ${shortDate(next.check.date)}` : 'Next paycheck'}
@@ -351,6 +342,15 @@ export default function Overview() {
           </>
         )}
       </Card>
+
+      {history.length > 0 && (
+        <>
+          <SectionHeader title="Cash flow by month" />
+          <Card>
+            <CashFlowChart months={history} planNet={cf.net} />
+          </Card>
+        </>
+      )}
 
       {/* Period totals and spending */}
       <SectionHeader title="Income & spending" />
